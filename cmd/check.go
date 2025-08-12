@@ -29,9 +29,9 @@ var (
 	namespaceFlag string
 	directionFlag string
 	outputFlag    string
+	targetPodFlag string
 )
 
-// checkCmd represents the check command
 var checkCmd = &cobra.Command{
 	Use:   "check",
 	Short: "evaluate network policies configuration to check for connectivity",
@@ -42,7 +42,8 @@ It will automatically check for labels and selectors and verify that this ip is 
 
 Example:
 
-songbird check -a 10.1.0.225 -p 40 -d ingress
+songbird check -a 10.1.0.225 -p 40 -d ingress -n my-namespace
+songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 `,
 	Run: func(cmd *cobra.Command, args []string) {
 		// Load kubeconfig
@@ -60,15 +61,46 @@ songbird check -a 10.1.0.225 -p 40 -d ingress
 		}
 		ctx := context.Background()
 
-		// 1. Get all pods
-		var (
-			pods *v1.PodList
-		)
-		if namespaceFlag != "" {
-			pods, err = clientset.CoreV1().Pods(namespaceFlag).List(ctx, metav1.ListOptions{})
+		var targetIP net.IP
+
+		if targetPodFlag != "" {
+			parts := strings.Split(targetPodFlag, "/")
+			if len(parts) != 2 {
+				logger.Logger.Error("invalid pod format. Must be 'namespace/podname'", slog.String("provided", targetPodFlag))
+				return
+			}
+			targetPodNamespace := parts[0]
+			targetPodName := parts[1]
+
+			pod, err := clientset.CoreV1().Pods(targetPodNamespace).Get(ctx, targetPodName, metav1.GetOptions{})
+			if err != nil {
+				logger.Logger.Error(
+					"failed to get pod by name",
+					slog.String("pod_name", targetPodName),
+					slog.String("namespace", targetPodNamespace),
+					slog.Any("error", err),
+				)
+				return
+			}
+			if pod.Status.PodIP == "" {
+				logger.Logger.Error("pod does not have an IP address", slog.String("pod_name", targetPodName))
+				return
+			}
+			targetIP = net.ParseIP(pod.Status.PodIP)
+		} else if addressFlag != "" {
+			targetIP = net.ParseIP(addressFlag)
+			if targetIP == nil {
+				logger.Logger.Error("invalid IP address", slog.String("addressIP", addressFlag))
+				return
+			}
 		} else {
-			pods, err = clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+			logger.Logger.Error("either an IP address or a pod name must be provided")
+			return
 		}
+
+		// 1. Get pods to check against (filtered by namespaceFlag)
+		var pods *v1.PodList
+		pods, err = clientset.CoreV1().Pods(namespaceFlag).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			logger.Logger.Error("failed to list pods", slog.Any("error", err))
 			return
@@ -88,12 +120,6 @@ songbird check -a 10.1.0.225 -p 40 -d ingress
 			nps[i] = &npl.Items[i]
 		}
 
-		targetIP := net.ParseIP(addressFlag)
-		if targetIP == nil {
-			logger.Logger.Error("invalid IP address", slog.String("addressIP", addressFlag))
-			return
-		}
-
 		var policyTypes []networkingv1.PolicyType
 		switch directionFlag {
 		case "egress":
@@ -106,11 +132,9 @@ songbird check -a 10.1.0.225 -p 40 -d ingress
 			logger.Logger.Error("invalid direction flag. Must be 'ingress', 'egress', or 'all'", slog.String("direction", directionFlag))
 			return
 		}
-
-		// Check if the output format is "wide"
 		isWide := outputFlag == "wide"
 
-		// 3. Check each pod
+		// 3. Check each pod in the filtered list
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		if isWide {
 			if _, err := fmt.Fprintln(w, "NAMESPACE\tPOD\tDIRECTION\tTARGET\tPORT\tNETWORK_POLICIES\tSTATUS"); err != nil {
@@ -138,7 +162,6 @@ songbird check -a 10.1.0.225 -p 40 -d ingress
 				logger.Logger.Error("failed to get network policies for pod", slog.Any("error", err))
 				return
 			}
-			// Extract the names of the policies
 			var policyNames []string
 			for _, np := range srcPodNetworkPolicies {
 				policyNames = append(policyNames, np.Name)
@@ -211,9 +234,11 @@ func init() {
 	RootCmd.AddCommand(checkCmd)
 	checkCmd.Flags().StringVarP(&addressFlag, "address", "a", "", "the ip address to check")
 	checkCmd.Flags().IntVarP(&portFlag, "port", "p", 0, "the port to check")
-	checkCmd.Flags().StringVarP(&namespaceFlag, "namespace", "n", "", "the namespace to check")
+	checkCmd.Flags().StringVarP(&namespaceFlag, "namespace", "n", "", "the namespace to filter pods to check against")
 	checkCmd.Flags().StringVarP(&directionFlag, "direction", "d", "all", "the traffic direction to check (ingress, egress, or all)")
 	checkCmd.Flags().StringVarP(&outputFlag, "output", "o", "", "Output format. Use 'wide' for additional information.")
-	checkCmd.MarkFlagRequired("address") //nolint:all
-	checkCmd.MarkFlagRequired("port")    //nolint:all
+	checkCmd.Flags().StringVarP(&targetPodFlag, "pod", "P", "", "the pod to check, in the format 'namespace/podname'")
+
+	checkCmd.MarkFlagsMutuallyExclusive("address", "pod")
+	checkCmd.MarkFlagRequired("port") //nolint:all
 }
