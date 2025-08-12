@@ -33,6 +33,8 @@ The `check` command inspects all pods in a given namespace (or all namespaces) t
 | `--direction` | `-d`      | The traffic direction to check. Options are `ingress`, `egress`, or `all`.                   | No       | `ingress`    |
 | `--namespace` | `-n`      | The specific namespace to check pods in. If omitted, all namespaces will be checked.         | No       | `default`    |
 
+See --help or the docs/ for more informations.
+
 #### Example
 
 This example checks if any pod in the `flux-system` namespace can send **egress** and receive **ingress** traffic to/from the IP `10.1.0.225` on port `40`.
