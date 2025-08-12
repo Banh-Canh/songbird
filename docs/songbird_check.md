@@ -12,6 +12,7 @@ It will automatically check for labels and selectors and verify that this ip is 
 Example:
 
 songbird check -a 10.1.0.225 -p 40 -d ingress -n my-namespace
+
 songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 
 

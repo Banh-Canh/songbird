@@ -13,6 +13,7 @@ By default, it shows a table with the policy names. Use the -o or --output flag 
 Example:
 
 songbird show my-namespace/my-app-pod
+
 songbird show my-namespace/my-app-pod -o yaml
 
 
