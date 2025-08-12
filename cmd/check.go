@@ -107,7 +107,7 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 		}
 		logger.Logger.Debug("successfully listed pods", slog.Int("pod_count", len(pods.Items)))
 
-		// 2. Get all network policies
+		// 2. Get all network policies from all namespaces
 		npl, err := clientset.NetworkingV1().NetworkPolicies("").List(ctx, metav1.ListOptions{})
 		if err != nil {
 			logger.Logger.Error("failed to list network policies", slog.Any("error", err))
@@ -147,6 +147,7 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 				return
 			}
 		}
+
 		for _, pod := range pods.Items {
 			if pod.Status.PodIP == "" {
 				logger.Logger.Info(
@@ -157,14 +158,24 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 				continue
 			}
 			srcPod := &pod
-			srcPodNetworkPolicies, err := networkpolicy.GetNetworkPoliciesForPod(pod, nps)
+
+			// Get local policies that apply directly to the pod
+			localPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(srcPod, nps)
 			if err != nil {
-				logger.Logger.Error("failed to get network policies for pod", slog.Any("error", err))
+				logger.Logger.Error("failed to get local network policies for pod", slog.Any("error", err))
 				return
 			}
+
+			// Get all policies (local and remote namespace) that affect the pod in any way.
+			allAffectingPolicies, err := networkpolicy.GetAllAffectingNetworkPolicies(clientset, srcPod, nps)
+			if err != nil {
+				logger.Logger.Error("failed to get all affecting network policies for pod", slog.Any("error", err))
+				return
+			}
+
 			var policyNames []string
-			for _, np := range srcPodNetworkPolicies {
-				policyNames = append(policyNames, np.Name)
+			for _, np := range allAffectingPolicies {
+				policyNames = append(policyNames, fmt.Sprintf("%s/%s", np.Namespace, np.Name))
 			}
 			matchedPolicies := strings.Join(policyNames, ", ")
 			if matchedPolicies == "" {
@@ -194,9 +205,11 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 					slog.String("target_ip", targetIP.String()),
 					slog.Int("port", portFlag),
 				)
+
+				// Evaluate connectivity using only the local policies
 				allowed, err := networkpolicy.EvaluatePodConnectivity(
 					clientset,
-					srcPodNetworkPolicies,
+					localPolicies,
 					policyType,
 					srcPod,
 					targetIP,

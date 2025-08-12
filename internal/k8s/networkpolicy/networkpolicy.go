@@ -13,26 +13,104 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// GetNetworkPoliciesForPod returns a slice of NetworkPolicies that apply to the given pod.
-func GetNetworkPoliciesForPod(pod v1.Pod, networkPolicies []*networkingv1.NetworkPolicy) ([]*networkingv1.NetworkPolicy, error) {
-	var result []*networkingv1.NetworkPolicy
-
+// GetLocalNetworkPoliciesForPod returns a slice of NetworkPolicies that directly apply to the given pod.
+// A policy directly applies if it is in the same namespace and its podSelector matches the pod.
+func GetLocalNetworkPoliciesForPod(pod *v1.Pod, allNetworkPolicies []*networkingv1.NetworkPolicy) ([]*networkingv1.NetworkPolicy, error) {
+	var policiesForPod []*networkingv1.NetworkPolicy
 	podLabels := labels.Set(pod.Labels)
-	for _, np := range networkPolicies {
-		if np.Namespace != pod.Namespace {
+
+	for _, np := range allNetworkPolicies {
+		if np.Namespace == pod.Namespace {
+			selector, err := metav1.LabelSelectorAsSelector(&np.Spec.PodSelector)
+			if err != nil {
+				return nil, fmt.Errorf("error parsing pod selector for network policy %s/%s: %w", np.Namespace, np.Name, err)
+			}
+			if selector.Matches(podLabels) {
+				policiesForPod = append(policiesForPod, np)
+			}
+		}
+	}
+	return policiesForPod, nil
+}
+
+// GetAllAffectingNetworkPolicies returns all policies (local and remote namespace) that affect a given pod.
+func GetAllAffectingNetworkPolicies(
+	clientset *kubernetes.Clientset,
+	pod *v1.Pod,
+	allNetworkPolicies []*networkingv1.NetworkPolicy,
+) ([]*networkingv1.NetworkPolicy, error) {
+	var policiesForPod []*networkingv1.NetworkPolicy
+
+	// First, get the local policies that directly apply to the pod
+	localPolicies, err := GetLocalNetworkPoliciesForPod(pod, allNetworkPolicies)
+	if err != nil {
+		return nil, err
+	}
+	policiesForPod = append(policiesForPod, localPolicies...)
+
+	// Then, find policies in other namespaces that have rules affecting this pod
+	for _, np := range allNetworkPolicies {
+		// Skip policies in the same namespace, as they were handled by GetLocalNetworkPoliciesForPod.
+		if np.Namespace == pod.Namespace {
 			continue
 		}
 
-		selector, err := metav1.LabelSelectorAsSelector(&np.Spec.PodSelector)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing pod selector for network policy %s/%s: %w", np.Namespace, np.Name, err)
-		}
-
-		if selector.Matches(podLabels) {
-			result = append(result, np)
+		// Check if the policy's ingress or egress rules explicitly target the pod.
+		if doesPolicyTargetPod(clientset, np, pod) {
+			policiesForPod = append(policiesForPod, np)
 		}
 	}
-	return result, nil
+
+	return policiesForPod, nil
+}
+
+// doesPolicyTargetPod checks if a network policy's ingress or egress rules
+func doesPolicyTargetPod(clientset *kubernetes.Clientset, np *networkingv1.NetworkPolicy, pod *v1.Pod) bool {
+	// Check Ingress rules for a "from" peer that matches the pod's namespace/labels.
+	for _, ingressRule := range np.Spec.Ingress {
+		for _, peer := range ingressRule.From {
+			if peer.NamespaceSelector != nil {
+				nsSelector, err := metav1.LabelSelectorAsSelector(peer.NamespaceSelector)
+				if err == nil {
+					// Match the namespace of the target pod
+					if nsSelector.Matches(labels.Set(map[string]string{"kubernetes.io/metadata.name": pod.Namespace})) {
+						// Namespace matches. Now check the pod selector if it exists.
+						if peer.PodSelector != nil {
+							podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
+							if err == nil && podSelector.Matches(labels.Set(pod.Labels)) {
+								return true // Found a match!
+							}
+						} else {
+							return true // Namespace matches and no pod selector specified, so it matches all pods in that namespace.
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Check Egress rules for a "to" peer that matches the pod's namespace/labels.
+	for _, egressRule := range np.Spec.Egress {
+		for _, peer := range egressRule.To {
+			if peer.NamespaceSelector != nil {
+				nsSelector, err := metav1.LabelSelectorAsSelector(peer.NamespaceSelector)
+				if err == nil {
+					if nsSelector.Matches(labels.Set(map[string]string{"kubernetes.io/metadata.name": pod.Namespace})) {
+						if peer.PodSelector != nil {
+							podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
+							if err == nil && podSelector.Matches(labels.Set(pod.Labels)) {
+								return true
+							}
+						} else {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return false
 }
 
 // EvaluatePodConnectivity checks if a pod connection is allowed based on a set of network policies.
@@ -186,7 +264,6 @@ func evaluateEgressRule(
 				if err != nil {
 					return false, fmt.Errorf("error listing pods in namespace %s: %w", srcPod.Namespace, err)
 				}
-				// Iterate through the pods to find a match for the destination IP.
 				for _, pod := range pods.Items {
 					if pod.Status.PodIP == dstIP.String() {
 						return evaluatePorts(egressRule.Ports, dstPort), nil
