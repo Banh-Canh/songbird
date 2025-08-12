@@ -89,3 +89,34 @@ metadata:
   namespace: flux-system
 [...]
 ```
+
+This example generate a netpol yaml for you to use
+
+```bash
+songbird create flux-system/flux-operator-86fdfcd59-p2vvq -a 1.1.1.1/32 -p 53
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  creationTimestamp: null
+  name: allow-flux-operator-86fdfcd59-p2vvq-from-ip-on-53
+  namespace: flux-system
+spec:
+  egress:
+  - ports:
+    - port: 53
+    to:
+    - ipBlock:
+        cidr: 1.1.1.1/32
+  ingress:
+  - from:
+    - ipBlock:
+        cidr: 1.1.1.1/32
+    ports:
+    - port: 53
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: flux-operator
+  policyTypes:
+  - Ingress
+  - Egress
+```
