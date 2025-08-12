@@ -125,7 +125,7 @@ songbird show my-namespace/my-app-pod -o yaml
 		}
 
 		if len(localPolicies) == 0 {
-			if _, err := fmt.Fprintln(w, fmt.Sprintf("%s\t(no policies found)", podNamespace)); err != nil {
+			if _, err := fmt.Fprintf(w, "%s\t(no policies found)\n", podNamespace); err != nil {
 				logger.Logger.Error("failed to write row to tabwriter", slog.Any("error", err))
 			}
 		} else {

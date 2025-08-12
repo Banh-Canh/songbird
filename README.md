@@ -58,3 +58,34 @@ flux-system  kustomize-controller-86447b847-t8t5x      from       10.244.3.5  44
 flux-system  notification-controller-55d7f99bf9-kp2j6  from       10.244.3.5  443   flux-system/allow-egress, flux-system/allow-scraping, flux-system/allow-webhooks, dmp/deny-all  ALLOWED ✅
 flux-system  source-controller-ffb777895-gv7c7         from       10.244.3.5  443   flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
 ```
+
+This example show the yaml affecting a pod.
+
+```bash
+songbird show flux-system/flux-operator-86fdfcd59-p2vvq -o yaml                                                                                                  nix-shell
+---
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"annotations":{},"name":"allow-ingress-to-flux-operator","namespace":"flux-system"},"spec":{"ingress":[{"from":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"ark"}},"podSelector":{"matchLabels":{"app.kubernetes.io/name":"island"}}}],"ports":[{"port":40,"protocol":"TCP"}]}],"podSelector":{"matchLabels":{"app.kubernetes.io/name":"flux-operator"}},"policyTypes":["Ingress"]}}
+  creationTimestamp: "2025-08-11T20:29:09Z"
+  generation: 4
+  managedFields:
+  - apiVersion: networking.k8s.io/v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:metadata:
+        f:annotations:
+          .: {}
+          f:kubectl.kubernetes.io/last-applied-configuration: {}
+      f:spec:
+        f:ingress: {}
+        f:podSelector: {}
+        f:policyTypes: {}
+    manager: kubectl-client-side-apply
+    operation: Update
+    time: "2025-08-11T20:29:09Z"
+  name: allow-ingress-to-flux-operator
+  namespace: flux-system
+[...]
+```
