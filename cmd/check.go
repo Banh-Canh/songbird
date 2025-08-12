@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -27,6 +28,7 @@ var (
 	portFlag      int
 	namespaceFlag string
 	directionFlag string
+	outputFlag    string
 )
 
 // checkCmd represents the check command
@@ -104,12 +106,22 @@ songbird check -a 10.1.0.225 -p 40 -d ingress
 			logger.Logger.Error("invalid direction flag. Must be 'ingress', 'egress', or 'all'", slog.String("direction", directionFlag))
 			return
 		}
+
+		// Check if the output format is "wide"
+		isWide := outputFlag == "wide"
+
 		// 3. Check each pod
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		// Write to tabwrite for later output
-		if _, err := fmt.Fprintln(w, "NAMESPACE\tPOD\tDIRECTION\tTARGET\tPORT\tSTATUS"); err != nil {
-			logger.Logger.Error("failed to write header to tabwriter", slog.Any("error", err))
-			return
+		if isWide {
+			if _, err := fmt.Fprintln(w, "NAMESPACE\tPOD\tDIRECTION\tTARGET\tPORT\tNETWORK_POLICIES\tSTATUS"); err != nil {
+				logger.Logger.Error("failed to write wide header to tabwriter", slog.Any("error", err))
+				return
+			}
+		} else {
+			if _, err := fmt.Fprintln(w, "NAMESPACE\tPOD\tDIRECTION\tSTATUS"); err != nil {
+				logger.Logger.Error("failed to write header to tabwriter", slog.Any("error", err))
+				return
+			}
 		}
 		for _, pod := range pods.Items {
 			if pod.Status.PodIP == "" {
@@ -126,6 +138,16 @@ songbird check -a 10.1.0.225 -p 40 -d ingress
 				logger.Logger.Error("failed to get network policies for pod", slog.Any("error", err))
 				return
 			}
+			// Extract the names of the policies
+			var policyNames []string
+			for _, np := range srcPodNetworkPolicies {
+				policyNames = append(policyNames, np.Name)
+			}
+			matchedPolicies := strings.Join(policyNames, ", ")
+			if matchedPolicies == "" {
+				matchedPolicies = "none"
+			}
+
 			for _, policyType := range policyTypes {
 				var directionText string
 				if policyType == networkingv1.PolicyTypeEgress {
@@ -166,9 +188,16 @@ songbird check -a 10.1.0.225 -p 40 -d ingress
 				if allowed {
 					status = "ALLOWED ✅"
 				}
-				if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n", srcPod.Namespace, srcPod.Name, directionText, targetIP.String(), portFlag, status); err != nil {
-					logger.Logger.Error("failed to write row to tabwriter", slog.Any("error", err))
-					return
+				if isWide {
+					if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n", srcPod.Namespace, srcPod.Name, directionText, targetIP.String(), portFlag, matchedPolicies, status); err != nil {
+						logger.Logger.Error("failed to write wide row to tabwriter", slog.Any("error", err))
+						return
+					}
+				} else {
+					if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", srcPod.Namespace, srcPod.Name, directionText, status); err != nil {
+						logger.Logger.Error("failed to write row to tabwriter", slog.Any("error", err))
+						return
+					}
 				}
 			}
 		}
@@ -184,6 +213,7 @@ func init() {
 	checkCmd.Flags().IntVarP(&portFlag, "port", "p", 0, "the port to check")
 	checkCmd.Flags().StringVarP(&namespaceFlag, "namespace", "n", "", "the namespace to check")
 	checkCmd.Flags().StringVarP(&directionFlag, "direction", "d", "all", "the traffic direction to check (ingress, egress, or all)")
+	checkCmd.Flags().StringVarP(&outputFlag, "output", "o", "", "Output format. Use 'wide' for additional information.")
 	checkCmd.MarkFlagRequired("address") //nolint:all
 	checkCmd.MarkFlagRequired("port")    //nolint:all
 }
