@@ -33,7 +33,7 @@ See [Documentations](docs/songbird.md).
 This example checks if any pod in the `flux-system` namespace can send **egress** and receive **ingress** traffic to/from the IP `1.1.1.1` on port `53`.
 
 ```bash
-songbird check -a 1.1.1.1 -p 53 -o wide -n flux-system                                                                                nix-shell
+songbird check -a 1.1.1.1 -p 53 -o wide -n flux-system
 NAMESPACE    POD                                       DIRECTION  TARGET   PORT  NETWORK_POLICIES                                                                                STATUS
 flux-system  flux-operator-6dc5986d74-nsl7v            to         1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              ALLOWED ✅
 flux-system  flux-operator-6dc5986d74-nsl7v            from       1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
@@ -62,7 +62,7 @@ flux-system  source-controller-ffb777895-gv7c7         from       10.244.3.5  44
 This example show the yaml affecting a pod.
 
 ```bash
-songbird show flux-system/flux-operator-86fdfcd59-p2vvq -o yaml                                                                                                  nix-shell
+songbird show flux-system/flux-operator-86fdfcd59-p2vvq -o yaml
 ---
 metadata:
   annotations:
