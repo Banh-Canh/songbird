@@ -26,42 +26,35 @@ The `check` command inspects all pods in a given namespace (or all namespaces) t
 
 #### Arguments and Flags
 
-| Flag          | Shorthand | Description                                                                                  | Required | Example      |
-| :------------ | :-------- | :------------------------------------------------------------------------------------------- | :------- | :----------- |
-| `--address`   | `-a`      | The target IP address to check connectivity against. This can be a pod's IP or any other IP. | Yes      | `10.1.0.225` |
-| `--port`      | `-p`      | The target port number for the connection.                                                   | Yes      | `40`         |
-| `--direction` | `-d`      | The traffic direction to check. Options are `ingress`, `egress`, or `all`.                   | No       | `ingress`    |
-| `--namespace` | `-n`      | The specific namespace to check pods in. If omitted, all namespaces will be checked.         | No       | `default`    |
-
-See --help or the docs/ for more informations.
+See [Documentations](docs/songbird.md).
 
 #### Example
 
-This example checks if any pod in the `flux-system` namespace can send **egress** and receive **ingress** traffic to/from the IP `10.1.0.225` on port `40`.
+This example checks if any pod in the `flux-system` namespace can send **egress** and receive **ingress** traffic to/from the IP `1.1.1.1` on port `53`.
 
 ```bash
-songbird check -a 10.1.0.225 -p 40 -d all -n flux-system
-NAMESPACE    POD                                       DIRECTION  TARGET      PORT  STATUS
-flux-system  flux-operator-86fdfcd59-p2vvq             to         10.1.0.225  40    DENIED ❌
-flux-system  flux-operator-86fdfcd59-p2vvq             from       10.1.0.225  40    ALLOWED ✅
-flux-system  helm-controller-cdcf95449-489mp           to         10.1.0.225  40    DENIED ❌
-flux-system  helm-controller-cdcf95449-489mp           from       10.1.0.225  40    DENIED ❌
-flux-system  kustomize-controller-86447b847-7ndxm      to         10.1.0.225  40    DENIED ❌
-flux-system  kustomize-controller-86447b847-7ndxm      from       10.1.0.225  40    DENIED ❌
-flux-system  notification-controller-55d7f99bf9-j6gh9  to         10.1.0.225  40    DENIED ❌
-flux-system  notification-controller-55d7f99bf9-j6gh9  from       10.1.0.225  40    DENIED ❌
-flux-system  source-controller-ffb777895-g28tj         to         10.1.0.225  40    DENIED ❌
-flux-system  source-controller-ffb777895-g28tj         from       10.1.0.225  40    DENIED ❌
+songbird check -a 1.1.1.1 -p 53 -o wide -n flux-system                                                                                nix-shell
+NAMESPACE    POD                                       DIRECTION  TARGET   PORT  NETWORK_POLICIES                                                                                STATUS
+flux-system  flux-operator-6dc5986d74-nsl7v            to         1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              ALLOWED ✅
+flux-system  flux-operator-6dc5986d74-nsl7v            from       1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
+flux-system  helm-controller-cdcf95449-knmb2           to         1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              ALLOWED ✅
+flux-system  helm-controller-cdcf95449-knmb2           from       1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
+flux-system  kustomize-controller-86447b847-t8t5x      to         1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              ALLOWED ✅
+flux-system  kustomize-controller-86447b847-t8t5x      from       1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
+flux-system  notification-controller-55d7f99bf9-kp2j6  to         1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, flux-system/allow-webhooks, dmp/deny-all  ALLOWED ✅
+flux-system  notification-controller-55d7f99bf9-kp2j6  from       1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, flux-system/allow-webhooks, dmp/deny-all  DENIED ❌
+flux-system  source-controller-ffb777895-gv7c7         to         1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              ALLOWED ✅
+flux-system  source-controller-ffb777895-gv7c7         from       1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
 ```
 
-This example checks if any pod in the `flux-system` namespace can receive **ingress** traffic from the IP `10.1.0.225` on port `44`.
+This example checks if any pod in the `flux-system` namespace can receive **ingress** traffic from the pod `zitadel-6b5d5d9cff-65rzv` in namespace `zitadel` on port `443`.
 
 ```bash
-songbird check -a 10.1.0.225 -d ingress -n flux-system -p 40
-NAMESPACE    POD                                       DIRECTION  TARGET      PORT  STATUS
-flux-system  flux-operator-86fdfcd59-p2vvq             from       10.1.0.225  40    ALLOWED ✅
-flux-system  helm-controller-cdcf95449-489mp           from       10.1.0.225  40    DENIED ❌
-flux-system  kustomize-controller-86447b847-7ndxm      from       10.1.0.225  40    DENIED ❌
-flux-system  notification-controller-55d7f99bf9-j6gh9  from       10.1.0.225  40    DENIED ❌
-flux-system  source-controller-ffb777895-g28tj         from       10.1.0.225  40    DENIED ❌
+songbird check -P zitadel/zitadel-6b5d5d9cff-65rzv -p 443 -o wide -n flux-system -d ingress
+NAMESPACE    POD                                       DIRECTION  TARGET      PORT  NETWORK_POLICIES                                                                                STATUS
+flux-system  flux-operator-6dc5986d74-nsl7v            from       10.244.3.5  443   flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
+flux-system  helm-controller-cdcf95449-knmb2           from       10.244.3.5  443   flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
+flux-system  kustomize-controller-86447b847-t8t5x      from       10.244.3.5  443   flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
+flux-system  notification-controller-55d7f99bf9-kp2j6  from       10.244.3.5  443   flux-system/allow-egress, flux-system/allow-scraping, flux-system/allow-webhooks, dmp/deny-all  ALLOWED ✅
+flux-system  source-controller-ffb777895-gv7c7         from       10.244.3.5  443   flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
 ```
