@@ -120,3 +120,52 @@ spec:
   - Ingress
   - Egress
 ```
+
+This example generate a netpol yaml for you to use, using pod name input
+
+```bash
+songbird create flux-system/flux-operator-6dc5986d74-nsl7v -P zitadel/zitadel-6b5d5d9cff-65rzv -p 443
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  creationTimestamp: null
+  name: allow-flux-operator-6dc5986d74-nsl7v-zitadel-6b5d5d9cff-65rzv-on-443
+  namespace: flux-system
+spec:
+  egress:
+  - ports:
+    - port: 443
+    to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: zitadel
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/component: start
+          app.kubernetes.io/instance: zitadel
+          app.kubernetes.io/managed-by: Helm
+          app.kubernetes.io/name: zitadel
+          app.kubernetes.io/version: v2.68.1
+          helm.sh/chart: zitadel-8.13.4
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: zitadel
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/component: start
+          app.kubernetes.io/instance: zitadel
+          app.kubernetes.io/managed-by: Helm
+          app.kubernetes.io/name: zitadel
+          app.kubernetes.io/version: v2.68.1
+          helm.sh/chart: zitadel-8.13.4
+    ports:
+    - port: 443
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: flux-operator
+  policyTypes:
+  - Ingress
+  - Egress
+```

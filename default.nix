@@ -16,13 +16,18 @@ let
     in
     !(parentDir == "docs" && (pkgs.lib.hasSuffix ".md" name));
 
+  cleanReadmeFilter = name: type: !(baseNameOf name == "README.md" && baseNameOf (dirOf name) == ".");
+
   cleanSource =
     src:
     pkgs.lib.cleanSourceWith {
       filter = cleanExamplesFilter;
       src = pkgs.lib.cleanSourceWith {
         filter = cleanDocsFilter;
-        src = pkgs.lib.cleanSource src;
+        src = pkgs.lib.cleanSourceWith {
+          filter = cleanReadmeFilter;
+          src = pkgs.lib.cleanSource src;
+        };
       };
     };
   build = pkgs.buildGoModule {

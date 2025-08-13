@@ -1,7 +1,6 @@
 package networkpolicy
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"slices"
@@ -10,11 +9,8 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/kubernetes"
 )
 
-// GetLocalNetworkPoliciesForPod returns a slice of NetworkPolicies that directly apply to the given pod.
-// A policy directly applies if it is in the same namespace and its podSelector matches the pod.
 func GetLocalNetworkPoliciesForPod(pod *v1.Pod, allNetworkPolicies []*networkingv1.NetworkPolicy) ([]*networkingv1.NetworkPolicy, error) {
 	var policiesForPod []*networkingv1.NetworkPolicy
 	podLabels := labels.Set(pod.Labels)
@@ -35,7 +31,8 @@ func GetLocalNetworkPoliciesForPod(pod *v1.Pod, allNetworkPolicies []*networking
 
 // GetAllAffectingNetworkPolicies returns all policies (local and remote namespace) that affect a given pod.
 func GetAllAffectingNetworkPolicies(
-	clientset *kubernetes.Clientset,
+	allPods *v1.PodList,
+	allNamespaces *v1.NamespaceList,
 	pod *v1.Pod,
 	allNetworkPolicies []*networkingv1.NetworkPolicy,
 ) ([]*networkingv1.NetworkPolicy, error) {
@@ -56,7 +53,7 @@ func GetAllAffectingNetworkPolicies(
 		}
 
 		// Check if the policy's ingress or egress rules explicitly target the pod.
-		if doesPolicyTargetPod(clientset, np, pod) {
+		if doesPolicyTargetPod(allPods, allNamespaces, np, pod) {
 			policiesForPod = append(policiesForPod, np)
 		}
 	}
@@ -65,7 +62,22 @@ func GetAllAffectingNetworkPolicies(
 }
 
 // doesPolicyTargetPod checks if a network policy's ingress or egress rules
-func doesPolicyTargetPod(clientset *kubernetes.Clientset, np *networkingv1.NetworkPolicy, pod *v1.Pod) bool {
+func doesPolicyTargetPod(allPods *v1.PodList, allNamespaces *v1.NamespaceList, np *networkingv1.NetworkPolicy, pod *v1.Pod) bool {
+	// Map to look up pods by IP quickly
+	podsByIP := make(map[string]*v1.Pod)
+	for i := range allPods.Items {
+		p := &allPods.Items[i]
+		if p.Status.PodIP != "" {
+			podsByIP[p.Status.PodIP] = p
+		}
+	}
+
+	namespacesByName := make(map[string]*v1.Namespace)
+	for i := range allNamespaces.Items {
+		ns := &allNamespaces.Items[i]
+		namespacesByName[ns.Name] = ns
+	}
+
 	// Check Ingress rules for a "from" peer that matches the pod's namespace/labels.
 	for _, ingressRule := range np.Spec.Ingress {
 		for _, peer := range ingressRule.From {
@@ -115,58 +127,52 @@ func doesPolicyTargetPod(clientset *kubernetes.Clientset, np *networkingv1.Netwo
 
 // EvaluatePodConnectivity checks if a pod connection is allowed based on a set of network policies.
 func EvaluatePodConnectivity(
-	clientset *kubernetes.Clientset,
-	networkPolicies []*networkingv1.NetworkPolicy, policyType networkingv1.PolicyType,
-	targetPod *v1.Pod, peerIP net.IP, port int,
+	networkPolicies []*networkingv1.NetworkPolicy,
+	policyType networkingv1.PolicyType,
+	targetPod *v1.Pod,
+	peerIP net.IP,
+	port int,
+	allPods *v1.PodList,
+	allNamespaces *v1.NamespaceList,
 ) (bool, error) {
 	var appliesToPolicyType bool
-	// Check if any of the network policies apply to the specified policyType (Ingress or Egress).
 	for _, netpol := range networkPolicies {
 		if slices.Contains(netpol.Spec.PolicyTypes, policyType) {
 			appliesToPolicyType = true
 			break
 		}
 	}
-	// If no policies apply to this traffic type, the connection is allowed !
 	if !appliesToPolicyType {
 		return true, nil
 	}
-	// try iterate through the network policies again to evaluate the specific rules :)
+
 	for _, netpol := range networkPolicies {
-		// Skip policies that do not apply to the current policyType.
 		if !slices.Contains(netpol.Spec.PolicyTypes, policyType) {
 			continue
 		}
-		// Handle Egress policies.
+
 		if policyType == networkingv1.PolicyTypeEgress {
-			// If an egress policy has no rules, it doesn't restrict traffic, so continue
 			if len(netpol.Spec.Egress) == 0 {
 				continue
 			}
-			// Evaluate each egress rule for a match.
 			for _, egressRule := range netpol.Spec.Egress {
-				allowed, err := evaluateEgressRule(clientset, egressRule, targetPod, peerIP, port)
+				allowed, err := evaluateEgressRule(egressRule, targetPod, peerIP, port, allPods, allNamespaces)
 				if err != nil {
 					return false, fmt.Errorf("error evaluating egress rule for policy %s: %w", netpol.Name, err)
 				}
-				// If a single egress rule allows the connection, the connection is permitted.
 				if allowed {
 					return true, nil
 				}
 			}
-		} else if policyType == networkingv1.PolicyTypeIngress { // Handle Ingress policies.
-			// If an ingress policy has no rules, it doesn't restrict traffic, so continue to the next policy.
+		} else if policyType == networkingv1.PolicyTypeIngress {
 			if len(netpol.Spec.Ingress) == 0 {
 				continue
 			}
-
-			// Evaluate each ingress rule for a match.
 			for _, ingressRule := range netpol.Spec.Ingress {
-				allowed, err := evaluateIngressRule(clientset, ingressRule, targetPod, peerIP, port)
+				allowed, err := evaluateIngressRule(ingressRule, targetPod, peerIP, port, allPods, allNamespaces)
 				if err != nil {
 					return false, fmt.Errorf("error evaluating ingress rule for policy %s: %w", netpol.Name, err)
 				}
-				// If a single ingress rule allows the connection, the connection is permitted.
 				if allowed {
 					return true, nil
 				}
@@ -174,17 +180,17 @@ func EvaluatePodConnectivity(
 		}
 	}
 
-	// If no rules in any applicable policy allowed the connection, it is denied.
 	return false, nil
 }
 
 // evaluateEgressRule checks if an egress rule allows a connection.
 func evaluateEgressRule(
-	clientset *kubernetes.Clientset,
 	egressRule networkingv1.NetworkPolicyEgressRule,
 	srcPod *v1.Pod,
 	dstIP net.IP,
 	dstPort int,
+	allPods *v1.PodList,
+	allNamespaces *v1.NamespaceList,
 ) (bool, error) {
 	// If the "to" field is empty, this egress rule applies to all destinations.
 	// The connection is allowed if the port matches.
@@ -216,57 +222,36 @@ func evaluateEgressRule(
 					return false, fmt.Errorf("error parsing namespace selector: %w", err)
 				}
 
-				// List all namespaces that match the selector.
-				namespaces, err := clientset.CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{
-					LabelSelector: nsSelector.String(),
-				})
-				if err != nil {
-					return false, fmt.Errorf("error listing namespaces: %w", err)
-				}
-
-				// Iterate through the matching namespaces.
-				for _, ns := range namespaces.Items {
-					podsInNs, err := clientset.CoreV1().Pods(ns.Name).List(context.Background(), metav1.ListOptions{})
-					if err != nil {
-						return false, fmt.Errorf("error listing pods in namespace %s: %w", ns.Name, err)
-					}
-					// Iterate through the pods to find a match for the destination IP.
-					for _, pod := range podsInNs.Items {
-						if pod.Status.PodIP == dstIP.String() {
-							// If a PodSelector is not specified, a match is found. Check the port.
-							if peer.PodSelector == nil {
-								return evaluatePorts(egressRule.Ports, dstPort), nil
-							}
-							// If a PodSelector is specified, convert it and check for a label match.
-							podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
-							if err != nil {
-								return false, fmt.Errorf("error parsing pod selector: %w", err)
-							}
-							if podSelector.Matches(labels.Set(pod.Labels)) {
-								return evaluatePorts(egressRule.Ports, dstPort), nil
+				for _, ns := range allNamespaces.Items {
+					if nsSelector.Matches(labels.Set(ns.Labels)) {
+						// Iterate through all pods and filter by namespace
+						for _, pod := range allPods.Items {
+							if pod.Namespace == ns.Name && pod.Status.PodIP == dstIP.String() {
+								if peer.PodSelector == nil {
+									return evaluatePorts(egressRule.Ports, dstPort), nil
+								}
+								podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
+								if err != nil {
+									return false, fmt.Errorf("error parsing pod selector: %w", err)
+								}
+								if podSelector.Matches(labels.Set(pod.Labels)) {
+									return evaluatePorts(egressRule.Ports, dstPort), nil
+								}
 							}
 						}
 					}
 				}
-				continue
-			}
-
-			// Handle cases with only a PodSelector (same namespace).
-			if peer.PodSelector != nil && peer.NamespaceSelector == nil {
-				// Convert the PodSelector to a selector object.
+			} else if peer.PodSelector != nil { // only PodSelector is set
 				podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
 				if err != nil {
 					return false, fmt.Errorf("error parsing pod selector: %w", err)
 				}
-				pods, err := clientset.CoreV1().Pods(srcPod.Namespace).List(context.Background(), metav1.ListOptions{
-					LabelSelector: podSelector.String(),
-				})
-				if err != nil {
-					return false, fmt.Errorf("error listing pods in namespace %s: %w", srcPod.Namespace, err)
-				}
-				for _, pod := range pods.Items {
-					if pod.Status.PodIP == dstIP.String() {
-						return evaluatePorts(egressRule.Ports, dstPort), nil
+				// Iterate through all pods in the source pod's namespace
+				for _, pod := range allPods.Items {
+					if pod.Namespace == srcPod.Namespace && pod.Status.PodIP == dstIP.String() {
+						if podSelector.Matches(labels.Set(pod.Labels)) {
+							return evaluatePorts(egressRule.Ports, dstPort), nil
+						}
 					}
 				}
 			}
@@ -277,11 +262,12 @@ func evaluateEgressRule(
 
 // evaluateIngressRule checks if an ingress rule allows a connection.
 func evaluateIngressRule(
-	clientset *kubernetes.Clientset,
 	ingressRule networkingv1.NetworkPolicyIngressRule,
 	targetPod *v1.Pod,
 	srcIP net.IP,
 	dstPort int,
+	allPods *v1.PodList,
+	allNamespaces *v1.NamespaceList,
 ) (bool, error) {
 	if len(ingressRule.From) == 0 {
 		return evaluatePorts(ingressRule.Ports, dstPort), nil
@@ -305,52 +291,35 @@ func evaluateIngressRule(
 					return false, fmt.Errorf("error parsing namespace selector: %w", err)
 				}
 
-				namespaces, err := clientset.CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{
-					LabelSelector: nsSelector.String(),
-				})
-				if err != nil {
-					return false, fmt.Errorf("error listing namespaces: %w", err)
-				}
-				for _, ns := range namespaces.Items {
-					var podSelector labels.Selector
-					if peer.PodSelector != nil {
-						podSelector, err = metav1.LabelSelectorAsSelector(peer.PodSelector)
-						if err != nil {
-							return false, fmt.Errorf("error parsing pod selector: %w", err)
+				for _, ns := range allNamespaces.Items {
+					if nsSelector.Matches(labels.Set(ns.Labels)) {
+						var podSelector labels.Selector
+						if peer.PodSelector != nil {
+							podSelector, err = metav1.LabelSelectorAsSelector(peer.PodSelector)
+							if err != nil {
+								return false, fmt.Errorf("error parsing pod selector: %w", err)
+							}
 						}
-					}
 
-					listOptions := metav1.ListOptions{}
-					if podSelector != nil {
-						listOptions.LabelSelector = podSelector.String()
-					}
-
-					podsInNs, err := clientset.CoreV1().Pods(ns.Name).List(context.Background(), listOptions)
-					if err != nil {
-						return false, fmt.Errorf("error listing pods in namespace %s: %w", ns.Name, err)
-					}
-					for _, pod := range podsInNs.Items {
-						if pod.Status.PodIP == srcIP.String() {
-							return evaluatePorts(ingressRule.Ports, dstPort), nil
+						for _, pod := range allPods.Items {
+							if pod.Namespace == ns.Name && pod.Status.PodIP == srcIP.String() {
+								if podSelector == nil || podSelector.Matches(labels.Set(pod.Labels)) {
+									return evaluatePorts(ingressRule.Ports, dstPort), nil
+								}
+							}
 						}
 					}
 				}
-				continue
-			}
-			if peer.PodSelector != nil && peer.NamespaceSelector == nil {
+			} else if peer.PodSelector != nil { // only PodSelector is set
 				podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
 				if err != nil {
 					return false, fmt.Errorf("error parsing pod selector: %w", err)
 				}
-				pods, err := clientset.CoreV1().Pods(targetPod.Namespace).List(context.Background(), metav1.ListOptions{
-					LabelSelector: podSelector.String(),
-				})
-				if err != nil {
-					return false, fmt.Errorf("error listing pods in namespace %s: %w", targetPod.Namespace, err)
-				}
-				for _, pod := range pods.Items {
-					if pod.Status.PodIP == srcIP.String() {
-						return evaluatePorts(ingressRule.Ports, dstPort), nil
+				for _, pod := range allPods.Items {
+					if pod.Namespace == targetPod.Namespace && pod.Status.PodIP == srcIP.String() {
+						if podSelector.Matches(labels.Set(pod.Labels)) {
+							return evaluatePorts(ingressRule.Ports, dstPort), nil
+						}
 					}
 				}
 			}

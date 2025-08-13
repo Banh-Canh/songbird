@@ -1,5 +1,5 @@
 /*
-Copyright © 2025 NAME HERE <EMAIL ADDRESS>
+Copyright © 2025 Victor Hang <vhvictorhang@gmail.com
 */
 package cmd
 
@@ -55,6 +55,8 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 			logger.Logger.Error("failed to load kubeconfig from environment variable", slog.Any("error", err))
 			return
 		}
+		config.QPS = 100
+		config.Burst = 100
 		clientset, err := kubernetes.NewForConfig(config)
 		if err != nil {
 			logger.Logger.Error("failed to create k8s client", slog.Any("error", err))
@@ -99,14 +101,17 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 			return
 		}
 
-		// 1. Get pods to check against (filtered by namespaceFlag)
-		var pods *v1.PodList
-		pods, err = clientset.CoreV1().Pods(namespaceFlag).List(ctx, metav1.ListOptions{})
+		// Pre-fetch all necessary resources to avoid repeated API calls in the loop.
+		allPods, err := clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 		if err != nil {
-			logger.Logger.Error("failed to list pods", slog.Any("error", err))
+			logger.Logger.Error("failed to list all pods", slog.Any("error", err))
 			return
 		}
-		logger.Logger.Debug("successfully listed pods", slog.Int("pod_count", len(pods.Items)))
+		allNamespaces, err := clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			logger.Logger.Error("failed to list all namespaces", slog.Any("error", err))
+			return
+		}
 
 		// 2. Get all network policies from all namespaces
 		npl, err := clientset.NetworkingV1().NetworkPolicies("").List(ctx, metav1.ListOptions{})
@@ -114,12 +119,28 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 			logger.Logger.Error("failed to list network policies", slog.Any("error", err))
 			return
 		}
-		logger.Logger.Debug("successfully listed network policies", slog.Int("network_policy_count", len(npl.Items)))
 
 		nps := make([]*networkingv1.NetworkPolicy, len(npl.Items))
 		for i := range npl.Items {
 			nps[i] = &npl.Items[i]
 		}
+
+		var podsToCheck *v1.PodList
+		if namespaceFlag != "" {
+			// Filter pods based on the provided namespace flag
+			filteredPods := []v1.Pod{}
+			for _, pod := range allPods.Items {
+				if pod.Namespace == namespaceFlag {
+					filteredPods = append(filteredPods, pod)
+				}
+			}
+			podsToCheck = &v1.PodList{Items: filteredPods}
+		} else {
+			podsToCheck = allPods
+		}
+
+		logger.Logger.Debug("successfully listed pods", slog.Int("pod_count", len(podsToCheck.Items)))
+		logger.Logger.Debug("successfully listed network policies", slog.Int("network_policy_count", len(nps)))
 
 		var policyTypes []networkingv1.PolicyType
 		switch directionFlag {
@@ -149,7 +170,7 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 			}
 		}
 
-		for _, pod := range pods.Items {
+		for _, pod := range podsToCheck.Items {
 			if pod.Status.PodIP == "" {
 				logger.Logger.Info(
 					"skipping pod with no IP address",
@@ -168,7 +189,7 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 			}
 
 			// Get all policies (local and remote namespace) that affect the pod in any way.
-			allAffectingPolicies, err := networkpolicy.GetAllAffectingNetworkPolicies(clientset, srcPod, nps)
+			allAffectingPolicies, err := networkpolicy.GetAllAffectingNetworkPolicies(allPods, allNamespaces, srcPod, nps)
 			if err != nil {
 				logger.Logger.Error("failed to get all affecting network policies for pod", slog.Any("error", err))
 				return
@@ -209,12 +230,13 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 
 				// Evaluate connectivity using only the local policies
 				allowed, err := networkpolicy.EvaluatePodConnectivity(
-					clientset,
 					localPolicies,
 					policyType,
 					srcPod,
 					targetIP,
 					portFlag,
+					allPods,
+					allNamespaces,
 				)
 				if err != nil {
 					logger.Logger.Error("failed to evaluate pod connectivity", slog.Any("error", err))
