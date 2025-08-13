@@ -1,10 +1,11 @@
 /*
-Copyright © 2025 Victor Hang <vhvictorhang@gmail.com
+Copyright © 2025 Victor Hang <vhvictorhang@gmail.com>
 */
 package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -31,6 +32,17 @@ var (
 	outputFlag    string
 	targetPodFlag string
 )
+
+// CheckResult defines the structure for the JSON output.
+type CheckResult struct {
+	Namespace       string   `json:"namespace"`
+	Pod             string   `json:"pod"`
+	Direction       string   `json:"direction"`
+	Target          string   `json:"target,omitempty"`
+	Port            int      `json:"port,omitempty"`
+	NetworkPolicies []string `json:"networkPolicies,omitempty"`
+	Status          string   `json:"status"`
+}
 
 var checkCmd = &cobra.Command{
 	Use:   "check",
@@ -166,22 +178,30 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 			logger.Logger.Error("invalid direction flag. Must be 'ingress', 'egress', or 'all'", slog.String("direction", directionFlag))
 			return
 		}
+
+		// Initialize JSON output
+		var results []CheckResult
+		isJSON := outputFlag == "json"
 		isWide := outputFlag == "wide"
 
-		// 3. Check each pod in the filtered list
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		if isWide {
-			if _, err := fmt.Fprintln(w, "NAMESPACE\tPOD\tDIRECTION\tTARGET\tPORT\tNETWORK_POLICIES\tSTATUS"); err != nil {
-				logger.Logger.Error("failed to write wide header to tabwriter", slog.Any("error", err))
-				return
-			}
-		} else {
-			if _, err := fmt.Fprintln(w, "NAMESPACE\tPOD\tDIRECTION\tSTATUS"); err != nil {
-				logger.Logger.Error("failed to write header to tabwriter", slog.Any("error", err))
-				return
+		// Set up tabwriter for non-JSON output
+		var w *tabwriter.Writer
+		if !isJSON {
+			w = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			if isWide {
+				if _, err := fmt.Fprintln(w, "NAMESPACE\tPOD\tDIRECTION\tTARGET\tPORT\tNETWORK_POLICIES\tSTATUS"); err != nil {
+					logger.Logger.Error("failed to write wide header to tabwriter", slog.Any("error", err))
+					return
+				}
+			} else {
+				if _, err := fmt.Fprintln(w, "NAMESPACE\tPOD\tDIRECTION\tSTATUS"); err != nil {
+					logger.Logger.Error("failed to write header to tabwriter", slog.Any("error", err))
+					return
+				}
 			}
 		}
 
+		// 3. Check each pod in the filtered list
 		for _, pod := range podsToCheck.Items {
 			if pod.Status.PodIP == "" {
 				logger.Logger.Info(
@@ -217,9 +237,9 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 			for _, policyType := range policyTypes {
 				var directionText string
 				if policyType == networkingv1.PolicyTypeEgress {
-					directionText = "to"
+					directionText = "egress"
 				} else {
-					directionText = "from"
+					directionText = "ingress"
 				}
 
 				logger.Logger.Debug(
@@ -256,21 +276,52 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 				if allowed {
 					status = "ALLOWED ✅"
 				}
-				if isWide {
-					if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n", srcPod.Namespace, srcPod.Name, directionText, targetIP.String(), portFlag, matchedPolicies, status); err != nil {
-						logger.Logger.Error("failed to write wide row to tabwriter", slog.Any("error", err))
-						return
-					}
-				} else {
-					if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", srcPod.Namespace, srcPod.Name, directionText, status); err != nil {
-						logger.Logger.Error("failed to write row to tabwriter", slog.Any("error", err))
-						return
+
+				// Create result for JSON output
+				result := CheckResult{
+					Namespace: srcPod.Namespace,
+					Pod:       srcPod.Name,
+					Direction: directionText,
+					Status:    status,
+				}
+
+				// Add wide information if needed
+				if isWide || isJSON {
+					result.Target = targetIP.String()
+					result.Port = portFlag
+					result.NetworkPolicies = policyNames
+				}
+				results = append(results, result)
+
+				// Output to tabwriter if not JSON
+				if !isJSON {
+					if isWide {
+						if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n", srcPod.Namespace, srcPod.Name, directionText, targetIP.String(), portFlag, matchedPolicies, status); err != nil {
+							logger.Logger.Error("failed to write wide row to tabwriter", slog.Any("error", err))
+							return
+						}
+					} else {
+						if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", srcPod.Namespace, srcPod.Name, directionText, status); err != nil {
+							logger.Logger.Error("failed to write row to tabwriter", slog.Any("error", err))
+							return
+						}
 					}
 				}
 			}
 		}
-		if err := w.Flush(); err != nil {
-			logger.Logger.Error("failed to flush tabwriter", slog.Any("error", err))
+
+		if isJSON {
+			// Marshal results slice into JSON with indentation
+			output, err := json.MarshalIndent(results, "", "  ")
+			if err != nil {
+				logger.Logger.Error("failed to marshal results to JSON", slog.Any("error", err))
+				return
+			}
+			fmt.Println(string(output))
+		} else {
+			if err := w.Flush(); err != nil {
+				logger.Logger.Error("failed to flush tabwriter", slog.Any("error", err))
+			}
 		}
 	},
 }
@@ -281,7 +332,8 @@ func init() {
 	checkCmd.Flags().IntVarP(&portFlag, "port", "p", 0, "the port to check")
 	checkCmd.Flags().StringVarP(&namespaceFlag, "namespace", "n", "", "the namespace to filter pods to check against")
 	checkCmd.Flags().StringVarP(&directionFlag, "direction", "d", "all", "the traffic direction to check (ingress, egress, or all)")
-	checkCmd.Flags().StringVarP(&outputFlag, "output", "o", "", "Output format. Use 'wide' for additional information.")
+	checkCmd.Flags().
+		StringVarP(&outputFlag, "output", "o", "", "Output format. Use 'wide' for additional information or 'json' for JSON output.")
 	checkCmd.Flags().StringVarP(&targetPodFlag, "pod", "P", "", "the pod to check, in the format 'namespace/podname'")
 
 	checkCmd.MarkFlagsMutuallyExclusive("address", "pod")
