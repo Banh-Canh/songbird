@@ -156,7 +156,7 @@ func EvaluatePodConnectivity(
 				continue
 			}
 			for _, egressRule := range netpol.Spec.Egress {
-				allowed, err := evaluateEgressRule(egressRule, targetPod, peerIP, port, podsByIP, namespacesByName)
+				allowed, err := evaluateEgressRule(egressRule, peerIP, port, podsByIP, namespacesByName)
 				if err != nil {
 					return false, fmt.Errorf("error evaluating egress rule for policy %s: %w", netpol.Name, err)
 				}
@@ -169,7 +169,7 @@ func EvaluatePodConnectivity(
 				continue
 			}
 			for _, ingressRule := range netpol.Spec.Ingress {
-				allowed, err := evaluateIngressRule(ingressRule, targetPod, peerIP, port, podsByIP, namespacesByName)
+				allowed, err := evaluateIngressRule(ingressRule, peerIP, port, podsByIP, namespacesByName)
 				if err != nil {
 					return false, fmt.Errorf("error evaluating ingress rule for policy %s: %w", netpol.Name, err)
 				}
@@ -179,14 +179,12 @@ func EvaluatePodConnectivity(
 			}
 		}
 	}
-
 	return false, nil
 }
 
 // evaluateEgressRule checks if an egress rule allows a connection.
 func evaluateEgressRule(
 	egressRule networkingv1.NetworkPolicyEgressRule,
-	srcPod *v1.Pod,
 	dstIP net.IP,
 	dstPort int,
 	podsByIP map[string]*v1.Pod,
@@ -238,7 +236,7 @@ func evaluateEgressRule(
 					return false, fmt.Errorf("error parsing pod selector: %w", err)
 				}
 				for _, pod := range podsByIP {
-					if pod.Namespace == srcPod.Namespace && pod.Status.PodIP == dstIP.String() {
+					if pod.Status.PodIP == dstIP.String() {
 						if podSelector.Matches(labels.Set(pod.Labels)) {
 							return evaluatePorts(egressRule.Ports, dstPort), nil
 						}
@@ -253,7 +251,6 @@ func evaluateEgressRule(
 // evaluateIngressRule checks if an ingress rule allows a connection.
 func evaluateIngressRule(
 	ingressRule networkingv1.NetworkPolicyIngressRule,
-	targetPod *v1.Pod,
 	srcIP net.IP,
 	dstPort int,
 	podsByIP map[string]*v1.Pod,
@@ -306,7 +303,7 @@ func evaluateIngressRule(
 					return false, fmt.Errorf("error parsing pod selector: %w", err)
 				}
 				for _, pod := range podsByIP {
-					if pod.Namespace == targetPod.Namespace && pod.Status.PodIP == srcIP.String() {
+					if pod.Status.PodIP == srcIP.String() {
 						if podSelector.Matches(labels.Set(pod.Labels)) {
 							return evaluatePorts(ingressRule.Ports, dstPort), nil
 						}

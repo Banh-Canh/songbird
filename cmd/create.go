@@ -193,7 +193,7 @@ songbird create my-app/api-pod -a 192.168.1.10/32 -d ingress -p 8080
 			return
 		}
 
-		policy.ObjectMeta.Name = policyName
+		policy.Name = policyName
 		// Marshal the policy to YAML and print
 		yamlBytes, err := yaml.Marshal(policy)
 		if err != nil {
@@ -229,5 +229,5 @@ func init() {
 		StringVarP(&addressFlag, "address", "a", "", "the IP address or CIDR block to allow connectivity from (e.g., 192.168.1.10/32)")
 	createCmd.Flags().IntVarP(&portFlag, "port", "p", 0, "the port to allow")
 	createCmd.Flags().StringVarP(&directionFlag, "direction", "d", "all", "the traffic direction to check (ingress, egress, or all)")
-	createCmd.MarkFlagRequired("port")
+	createCmd.MarkFlagRequired("port") //nolint:all
 }
