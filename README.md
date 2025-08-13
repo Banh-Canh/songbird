@@ -16,6 +16,24 @@ To use `songbird`, you must have a `kubeconfig` file configured in your environm
 
 ---
 
+## Requirements
+
+Songbird will require admnistators to have least the following permissions:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: songbird-network-checker
+rules:
+  - apiGroups: ['']
+    resources: ['pods', 'namespaces']
+    verbs: ['get', 'list', 'watch']
+  - apiGroups: ['networking.k8s.io']
+    resources: ['networkpolicies']
+    verbs: ['get', 'list', 'watch']
+```
+
 ## 📖 Usage
 
 The main command is `check`, which evaluates connectivity based on your specified parameters.
