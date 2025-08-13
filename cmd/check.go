@@ -65,6 +65,8 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 		ctx := context.Background()
 
 		var targetIP net.IP
+		var targetPod *v1.Pod
+		var targetPodNamespace string
 
 		if targetPodFlag != "" {
 			parts := strings.Split(targetPodFlag, "/")
@@ -72,10 +74,10 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 				logger.Logger.Error("invalid pod format. Must be 'namespace/podname'", slog.String("provided", targetPodFlag))
 				return
 			}
-			targetPodNamespace := parts[0]
+			targetPodNamespace = parts[0]
 			targetPodName := parts[1]
 
-			pod, err := clientset.CoreV1().Pods(targetPodNamespace).Get(ctx, targetPodName, metav1.GetOptions{})
+			targetPod, err = clientset.CoreV1().Pods(targetPodNamespace).Get(ctx, targetPodName, metav1.GetOptions{})
 			if err != nil {
 				logger.Logger.Error(
 					"failed to get pod by name",
@@ -85,11 +87,11 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 				)
 				return
 			}
-			if pod.Status.PodIP == "" {
+			if targetPod.Status.PodIP == "" {
 				logger.Logger.Error("pod does not have an IP address", slog.String("pod_name", targetPodName))
 				return
 			}
-			targetIP = net.ParseIP(pod.Status.PodIP)
+			targetIP = net.ParseIP(targetPod.Status.PodIP)
 		} else if addressFlag != "" {
 			targetIP = net.ParseIP(addressFlag)
 			if targetIP == nil {
@@ -101,7 +103,7 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 			return
 		}
 
-		// Pre-fetch all necessary resources to avoid repeated API calls in the loop.
+		// Pre-fetch all necessary resources to avoid repeated API calls.
 		allPods, err := clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 		if err != nil {
 			logger.Logger.Error("failed to list all pods", slog.Any("error", err))
@@ -112,8 +114,6 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 			logger.Logger.Error("failed to list all namespaces", slog.Any("error", err))
 			return
 		}
-
-		// 2. Get all network policies from all namespaces
 		npl, err := clientset.NetworkingV1().NetworkPolicies("").List(ctx, metav1.ListOptions{})
 		if err != nil {
 			logger.Logger.Error("failed to list network policies", slog.Any("error", err))
@@ -123,6 +123,18 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 		nps := make([]*networkingv1.NetworkPolicy, len(npl.Items))
 		for i := range npl.Items {
 			nps[i] = &npl.Items[i]
+		}
+		podsByIP := make(map[string]*v1.Pod)
+		for i := range allPods.Items {
+			p := &allPods.Items[i]
+			if p.Status.PodIP != "" {
+				podsByIP[p.Status.PodIP] = p
+			}
+		}
+		namespacesByName := make(map[string]*v1.Namespace)
+		for i := range allNamespaces.Items {
+			ns := &allNamespaces.Items[i]
+			namespacesByName[ns.Name] = ns
 		}
 
 		var podsToCheck *v1.PodList
@@ -181,14 +193,12 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 			}
 			srcPod := &pod
 
-			// Get local policies that apply directly to the pod
 			localPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(srcPod, nps)
 			if err != nil {
 				logger.Logger.Error("failed to get local network policies for pod", slog.Any("error", err))
 				return
 			}
 
-			// Get all policies (local and remote namespace) that affect the pod in any way.
 			allAffectingPolicies, err := networkpolicy.GetAllAffectingNetworkPolicies(allPods, allNamespaces, srcPod, nps)
 			if err != nil {
 				logger.Logger.Error("failed to get all affecting network policies for pod", slog.Any("error", err))
@@ -228,15 +238,14 @@ songbird check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
 					slog.Int("port", portFlag),
 				)
 
-				// Evaluate connectivity using only the local policies
 				allowed, err := networkpolicy.EvaluatePodConnectivity(
 					localPolicies,
 					policyType,
 					srcPod,
 					targetIP,
 					portFlag,
-					allPods,
-					allNamespaces,
+					podsByIP,
+					namespacesByName,
 				)
 				if err != nil {
 					logger.Logger.Error("failed to evaluate pod connectivity", slog.Any("error", err))
