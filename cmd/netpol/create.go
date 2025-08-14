@@ -1,4 +1,4 @@
-package cmd
+package netpol
 
 import (
 	"context"
@@ -21,7 +21,7 @@ import (
 
 var createCmd = &cobra.Command{
 	Use:   "create [target-namespace/target-pod]",
-	Short: "generate a network policy yaml to allow connectivity to a pod",
+	Short: "Generate a network policy yaml to allow connectivity to a pod",
 	Long: `Generate a Kubernetes NetworkPolicy YAML based on a target pod or an IP address.
 
 This command inspects the labels of the specified pods or uses a provided IP to create a specific
@@ -29,11 +29,9 @@ NetworkPolicy that allows traffic on a given port and direction.
 
 Examples:
 
-# Create a policy in the 'my-app' namespace, allowing ingress from 'my-db/db-pod' to 'my-app/api-pod' on port 5432
-songbird create my-app/api-pod -P my-db/db-pod -d ingress -p 5432
+songbird netpol create my-app/api-pod -P my-db/db-pod -d ingress -p 5432
 
-# Create a policy allowing ingress from a specific IP address to 'my-app/api-pod'
-songbird create my-app/api-pod -a 192.168.1.10/32 -d ingress -p 8080
+songbird netpol create my-app/api-pod -a 192.168.1.10/32 -d ingress -p 8080
 `,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -222,7 +220,7 @@ func filterGeneratedLabels(labels map[string]string) map[string]string {
 }
 
 func init() {
-	RootCmd.AddCommand(createCmd)
+	netpolCmd.AddCommand(createCmd)
 	createCmd.Flags().
 		StringVarP(&targetPodFlag, "peer-pod", "P", "", "the pod to allow connectivity from, in the format 'namespace/podname'")
 	createCmd.Flags().

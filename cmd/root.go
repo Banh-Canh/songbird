@@ -22,8 +22,8 @@ var (
 // rootCmd represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{
 	Use:   "songbird",
-	Short: "A brief description of your application",
-	Long: `Evaluate network policies configuration to check for connectivity
+	Short: "A tool to help diagnosing your kubernetes network.",
+	Long: `Evaluate network policies configuration to check for connectivity, check for dns.
 `,
 
 	// Uncomment the following line if your bare application
@@ -33,6 +33,7 @@ var RootCmd = &cobra.Command{
 			fmt.Printf("%s", version)
 			os.Exit(0)
 		}
+		cmd.Help() //nolint:all
 	},
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		// Initialize configuration here

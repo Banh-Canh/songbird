@@ -49,6 +49,7 @@ See [Documentations](docs/songbird.md).
 #### Example
 
 This example checks if any pod in the `flux-system` namespace can send **egress** and receive **ingress** traffic to/from the IP `1.1.1.1` on port `53`.
+It should test both side, so if it says allowed, you can be sure that the traffic is not blocked by any network policy.
 
 ```bash
 songbird check -a 1.1.1.1 -p 53 -o wide -n flux-system
@@ -65,16 +66,12 @@ flux-system  source-controller-ffb777895-gv7c7         to         1.1.1.1  53   
 flux-system  source-controller-ffb777895-gv7c7         from       1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
 ```
 
-This example checks if any pod in the `flux-system` namespace can receive **ingress** traffic from the pod `zitadel-6b5d5d9cff-65rzv` in namespace `zitadel` on port `443`.
+This example checks if any pod in the `fluent` namespace can receive **ingress** or **egress** traffic from the pod `debug` in namespace `monitoring` on port `443`. It is filtered to show only denied result.
 
 ```bash
-songbird check -P zitadel/zitadel-6b5d5d9cff-65rzv -p 443 -o wide -n flux-system -d ingress
-NAMESPACE    POD                                       DIRECTION  TARGET      PORT  NETWORK_POLICIES                                                                                STATUS
-flux-system  flux-operator-6dc5986d74-nsl7v            from       10.244.3.5  443   flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
-flux-system  helm-controller-cdcf95449-knmb2           from       10.244.3.5  443   flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
-flux-system  kustomize-controller-86447b847-t8t5x      from       10.244.3.5  443   flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
-flux-system  notification-controller-55d7f99bf9-kp2j6  from       10.244.3.5  443   flux-system/allow-egress, flux-system/allow-scraping, flux-system/allow-webhooks, dmp/deny-all  ALLOWED ✅
-flux-system  source-controller-ffb777895-gv7c7         from       10.244.3.5  443   flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
+songbird netpol check -P monitoring/debug -n fluent -p 8443 --denied-only                                                                  nix-shell
+NAMESPACE  POD    DIRECTION  TARGET            PORT  STATUS
+fluent     debug  from       monitoring/debug  8443  DENIED ❌
 ```
 
 This example show the yaml affecting a pod.
@@ -186,4 +183,22 @@ spec:
   policyTypes:
   - Ingress
   - Egress
+```
+
+This example show how to run a query on the internal coredns of your kubernetes cluster.
+
+```bash
+songbird dns lookup kubernetes.default
+Name:    kubernetes.default.svc.bealv.local
+Address: 172.17.0.1
+```
+
+This example show how to run a simple check test on your kubernetes dns.
+For now, it only show pods that can't access it due to netpol restrictions.
+
+```bash
+songbird dns check                                                                                                                      nix-shell
+NAMESPACE   POD                                                   DIRECTION  TARGET                                PORT  STATUS
+monitoring  debug                                                 to         kube-system/coredns-796d84c46b-7mtj9  53    DENIED ❌
+monitoring  grafana-operator-controller-manager-6474b685bc-hzncq  to         kube-system/coredns-796d84c46b-7mtj9  53    DENIED ❌
 ```

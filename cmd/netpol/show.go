@@ -2,7 +2,7 @@
 Copyright © 2025 NAME HERE <EMAIL ADDRESS>
 */
 
-package cmd
+package netpol
 
 import (
 	"context"
@@ -36,9 +36,9 @@ By default, it shows a table with the policy names. Use the -o or --output flag 
 
 Example:
 
-songbird show my-namespace/my-app-pod
+songbird netpol show my-namespace/my-app-pod
 
-songbird show my-namespace/my-app-pod -o yaml
+songbird netpol show my-namespace/my-app-pod -o yaml
 `,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -145,6 +145,6 @@ songbird show my-namespace/my-app-pod -o yaml
 }
 
 func init() {
-	RootCmd.AddCommand(showCmd)
+	netpolCmd.AddCommand(showCmd)
 	showCmd.Flags().StringVarP(&outputFormat, "output", "o", "", "Output format. Only 'yaml' is supported.")
 }
