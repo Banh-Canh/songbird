@@ -52,7 +52,7 @@ This example checks if any pod in the `flux-system` namespace can send **egress*
 It should test both side, so if it says allowed, you can be sure that the traffic is not blocked by any network policy.
 
 ```bash
-songbird check -a 1.1.1.1 -p 53 -o wide -n flux-system
+songbird netpol check -a 1.1.1.1 -p 53 -o wide -n flux-system
 NAMESPACE    POD                                       DIRECTION  TARGET   PORT  NETWORK_POLICIES                                                                                STATUS
 flux-system  flux-operator-6dc5986d74-nsl7v            to         1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              ALLOWED ✅
 flux-system  flux-operator-6dc5986d74-nsl7v            from       1.1.1.1  53    flux-system/allow-egress, flux-system/allow-scraping, dmp/deny-all                              DENIED ❌
