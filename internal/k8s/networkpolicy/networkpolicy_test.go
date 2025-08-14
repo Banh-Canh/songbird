@@ -203,7 +203,7 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 	}
 	namespacesByName := map[string]*v1.Namespace{
 		"peer-namespace":   newNamespace("peer-namespace", map[string]string{"env": "prod"}),
-		"target-namespace": newNamespace("target-namespace", map[string]string{"env": "prod"}),
+		"target-namespace": newNamespace("target-namespace", map[string]string{"kubernetes.io/metadata.name": targetPod.Namespace}),
 	}
 
 	t.Run("Ingress: should allow connection if a policy explicitly allows it", func(t *testing.T) {
@@ -216,7 +216,14 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 				Ingress: []networkingv1.NetworkPolicyIngressRule{
 					{
 						From: []networkingv1.NetworkPolicyPeer{
-							{PodSelector: &metav1.LabelSelector{MatchLabels: targetPod.Labels}},
+							{
+								PodSelector: &metav1.LabelSelector{MatchLabels: targetPod.Labels},
+								NamespaceSelector: &metav1.LabelSelector{
+									MatchLabels: map[string]string{
+										"kubernetes.io/metadata.name": targetPod.Namespace,
+									},
+								},
+							},
 						},
 						Ports: []networkingv1.NetworkPolicyPort{
 							{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 8080}},
@@ -285,7 +292,14 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 				Egress: []networkingv1.NetworkPolicyEgressRule{
 					{
 						To: []networkingv1.NetworkPolicyPeer{
-							{PodSelector: &metav1.LabelSelector{MatchLabels: targetPod.Labels}},
+							{
+								PodSelector: &metav1.LabelSelector{MatchLabels: targetPod.Labels},
+								NamespaceSelector: &metav1.LabelSelector{
+									MatchLabels: map[string]string{
+										"kubernetes.io/metadata.name": targetPod.Namespace,
+									},
+								},
+							},
 						},
 						Ports: []networkingv1.NetworkPolicyPort{
 							{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 8080}},
@@ -518,6 +532,67 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 			80,
 			podsByIP,
 			nil,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if allowed {
+			t.Fatal("expected connection to be denied because of an empty ingress list, but it was allowed")
+		}
+	})
+
+	t.Run("Ingress: should deny if the pod is not in the same namespace. It doesn't match the in namespace rule.", func(t *testing.T) {
+		// A Network Policy with a PolicyType of Ingress but no Ingress rules
+		// means all ingress traffic is denied.
+		ingressPolicy := &networkingv1.NetworkPolicy{
+			Spec: networkingv1.NetworkPolicySpec{
+				// The podSelector is empty, meaning it selects all pods in the namespace.
+				PodSelector: metav1.LabelSelector{},
+				PolicyTypes: []networkingv1.PolicyType{
+					networkingv1.PolicyTypeIngress,
+					networkingv1.PolicyTypeEgress,
+				},
+				// The Ingress rule list. An empty podSelector means it allows traffic from all pods
+				// within the same namespace.
+				Ingress: []networkingv1.NetworkPolicyIngressRule{
+					{
+						From: []networkingv1.NetworkPolicyPeer{
+							{
+								PodSelector: &metav1.LabelSelector{},
+							},
+						},
+					},
+				},
+				// The Egress rule list. An empty podSelector means it allows traffic to all pods
+				// within the same namespace.
+				Egress: []networkingv1.NetworkPolicyEgressRule{
+					{
+						To: []networkingv1.NetworkPolicyPeer{
+							{
+								PodSelector: &metav1.LabelSelector{},
+							},
+						},
+					},
+				},
+			},
+		}
+		targetPod := newPod("target-pod", "default", "10.0.0.30", map[string]string{"dummy": "dummy"})
+		peerPod := newPod("peer-pod", "monitoring", "10.0.1.5", map[string]string{"app": "web"})
+		namespacesByName := map[string]*v1.Namespace{
+			"default":    newNamespace("default", map[string]string{"env": "dev"}),
+			"monitoring": newNamespace("monitoring", map[string]string{"env": "prod"}),
+		}
+
+		podsByIP := map[string]*v1.Pod{targetPod.Status.PodIP: targetPod}
+
+		allowed, err := networkpolicy.EvaluatePodConnectivity(
+			[]*networkingv1.NetworkPolicy{ingressPolicy},
+			networkingv1.PolicyTypeIngress,
+			peerPod,
+			net.ParseIP(targetPod.Status.PodIP),
+			80,
+			podsByIP,
+			namespacesByName,
 		)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)

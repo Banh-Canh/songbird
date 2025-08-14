@@ -41,7 +41,7 @@ func RunNetpolCheck(
 	namespace string,
 	direction string,
 	output string,
-	showDeniedOnly bool, // New flag added here
+	showDeniedOnly bool,
 ) error {
 	// Pre-fetch all necessary resources to avoid repeated API calls.
 	allPods, err := clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
@@ -391,18 +391,27 @@ func doesPolicyTargetPod(
 	// Check Ingress rules for a "from" peer that matches the pod's namespace/labels.
 	for _, ingressRule := range np.Spec.Ingress {
 		for _, peer := range ingressRule.From {
+			// Case 1: Policy peer explicitly selects a namespace (and potentially pods)
 			if peer.NamespaceSelector != nil {
 				nsSelector, err := metav1.LabelSelectorAsSelector(peer.NamespaceSelector)
-				if err == nil {
-					if nsSelector.Matches(labels.Set(namespacesByName[pod.Namespace].Labels)) {
-						if peer.PodSelector != nil {
-							podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
-							if err == nil && podSelector.Matches(labels.Set(pod.Labels)) {
-								return true
-							}
-						} else {
+				if err == nil && nsSelector.Matches(labels.Set(namespacesByName[pod.Namespace].Labels)) {
+					if peer.PodSelector != nil {
+						podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
+						if err == nil && podSelector.Matches(labels.Set(pod.Labels)) {
 							return true
 						}
+					} else { // No podSelector, so it matches all pods in the namespace
+						return true
+					}
+				}
+			} else if peer.PodSelector != nil {
+				// Case 2: Policy peer has a podSelector but no namespaceSelector.
+				// This implicitly means pods in the same namespace as the policy.
+				// We need to check if the target pod is in the same namespace as the policy.
+				if np.Namespace == pod.Namespace {
+					podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
+					if err == nil && podSelector.Matches(labels.Set(pod.Labels)) {
+						return true
 					}
 				}
 			}
@@ -412,18 +421,27 @@ func doesPolicyTargetPod(
 	// Check Egress rules for a "to" peer that matches the pod's namespace/labels.
 	for _, egressRule := range np.Spec.Egress {
 		for _, peer := range egressRule.To {
+			// Case 1: Policy peer explicitly selects a namespace (and potentially pods)
 			if peer.NamespaceSelector != nil {
 				nsSelector, err := metav1.LabelSelectorAsSelector(peer.NamespaceSelector)
-				if err == nil {
-					if nsSelector.Matches(labels.Set(namespacesByName[pod.Namespace].Labels)) {
-						if peer.PodSelector != nil {
-							podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
-							if err == nil && podSelector.Matches(labels.Set(pod.Labels)) {
-								return true
-							}
-						} else {
+				if err == nil && nsSelector.Matches(labels.Set(namespacesByName[pod.Namespace].Labels)) {
+					if peer.PodSelector != nil {
+						podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
+						if err == nil && podSelector.Matches(labels.Set(pod.Labels)) {
 							return true
 						}
+					} else { // No podSelector, so it matches all pods in the namespace
+						return true
+					}
+				}
+			} else if peer.PodSelector != nil {
+				// Case 2: Policy peer has a podSelector but no namespaceSelector.
+				// This implicitly means pods in the same namespace as the policy.
+				// We need to check if the target pod is in the same namespace as the policy.
+				if np.Namespace == pod.Namespace {
+					podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
+					if err == nil && podSelector.Matches(labels.Set(pod.Labels)) {
+						return true
 					}
 				}
 			}
@@ -464,7 +482,7 @@ func EvaluatePodConnectivity(
 				continue
 			}
 			for _, egressRule := range netpol.Spec.Egress {
-				allowed, err := evaluateEgressRule(egressRule, peerIP, port, podsByIP, namespacesByName)
+				allowed, err := evaluateEgressRule(egressRule, netpol.Namespace, peerIP, port, podsByIP, namespacesByName)
 				if err != nil {
 					return false, fmt.Errorf("error evaluating egress rule for policy %s: %w", netpol.Name, err)
 				}
@@ -477,7 +495,7 @@ func EvaluatePodConnectivity(
 				continue
 			}
 			for _, ingressRule := range netpol.Spec.Ingress {
-				allowed, err := evaluateIngressRule(ingressRule, peerIP, port, podsByIP, namespacesByName)
+				allowed, err := evaluateIngressRule(ingressRule, netpol.Namespace, peerIP, port, podsByIP, namespacesByName)
 				if err != nil {
 					return false, fmt.Errorf("error evaluating ingress rule for policy %s: %w", netpol.Name, err)
 				}
@@ -491,8 +509,10 @@ func EvaluatePodConnectivity(
 }
 
 // evaluateEgressRule checks if an egress rule allows a connection.
+// It now takes the policy's namespace as a new parameter.
 func evaluateEgressRule(
 	egressRule networkingv1.NetworkPolicyEgressRule,
+	policyNamespace string,
 	dstIP net.IP,
 	dstPort int,
 	podsByIP map[string]*v1.Pod,
@@ -513,41 +533,53 @@ func evaluateEgressRule(
 			}
 		}
 
+		// A peer can have a PodSelector or a NamespaceSelector.
+		// A NamespaceSelector without a PodSelector matches all pods in that namespace.
+		// A PodSelector without a NamespaceSelector matches pods in the *policy's* namespace.
+		// A combination of both matches pods with specified labels in a selected namespace.
 		if peer.PodSelector != nil || peer.NamespaceSelector != nil {
+			peerPod, ok := podsByIP[dstIP.String()]
+			if !ok {
+				continue // The destination IP doesn't belong to a pod, so we can't evaluate pod/namespace selectors.
+			}
+
+			// Case 1: Explicitly selected namespace
 			if peer.NamespaceSelector != nil {
 				nsSelector, err := metav1.LabelSelectorAsSelector(peer.NamespaceSelector)
 				if err != nil {
 					return false, fmt.Errorf("error parsing namespace selector: %w", err)
 				}
-
-				for _, ns := range namespacesByName {
-					if nsSelector.Matches(labels.Set(ns.Labels)) {
-						for _, pod := range podsByIP {
-							if pod.Namespace == ns.Name && pod.Status.PodIP == dstIP.String() {
-								if peer.PodSelector == nil {
-									return evaluatePorts(egressRule.Ports, dstPort), nil
-								}
-								podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
-								if err != nil {
-									return false, fmt.Errorf("error parsing pod selector: %w", err)
-								}
-								if podSelector.Matches(labels.Set(pod.Labels)) {
-									return evaluatePorts(egressRule.Ports, dstPort), nil
-								}
-							}
-						}
+				peerNs, ok := namespacesByName[peerPod.Namespace]
+				if !ok {
+					continue
+				}
+				if nsSelector.Matches(labels.Set(peerNs.Labels)) {
+					// We've matched the namespace, now check pod labels if a podSelector exists.
+					if peer.PodSelector == nil {
+						return evaluatePorts(egressRule.Ports, dstPort), nil
+					}
+					podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
+					if err != nil {
+						return false, fmt.Errorf("error parsing pod selector: %w", err)
+					}
+					if podSelector.Matches(labels.Set(peerPod.Labels)) {
+						return evaluatePorts(egressRule.Ports, dstPort), nil
 					}
 				}
-			} else if peer.PodSelector != nil {
-				podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
-				if err != nil {
-					return false, fmt.Errorf("error parsing pod selector: %w", err)
-				}
-				for _, pod := range podsByIP {
-					if pod.Status.PodIP == dstIP.String() {
-						if podSelector.Matches(labels.Set(pod.Labels)) {
-							return evaluatePorts(egressRule.Ports, dstPort), nil
-						}
+			} else {
+				// Case 2: PodSelector without a NamespaceSelector (implicit same-namespace rule)
+				// Check if the destination pod is in the same namespace as the policy.
+				if peerPod.Namespace == policyNamespace {
+					if peer.PodSelector == nil {
+						// This case should not be reached as peer.PodSelector is checked to be non-nil.
+						return evaluatePorts(egressRule.Ports, dstPort), nil
+					}
+					podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
+					if err != nil {
+						return false, fmt.Errorf("error parsing pod selector: %w", err)
+					}
+					if podSelector.Matches(labels.Set(peerPod.Labels)) {
+						return evaluatePorts(egressRule.Ports, dstPort), nil
 					}
 				}
 			}
@@ -557,8 +589,10 @@ func evaluateEgressRule(
 }
 
 // evaluateIngressRule checks if an ingress rule allows a connection.
+// It now takes the policy's namespace as a new parameter.
 func evaluateIngressRule(
 	ingressRule networkingv1.NetworkPolicyIngressRule,
+	policyNamespace string,
 	srcIP net.IP,
 	dstPort int,
 	podsByIP map[string]*v1.Pod,
@@ -580,41 +614,48 @@ func evaluateIngressRule(
 		}
 
 		if peer.PodSelector != nil || peer.NamespaceSelector != nil {
+			peerPod, ok := podsByIP[srcIP.String()]
+			if !ok {
+				continue // The source IP doesn't belong to a pod, so we can't evaluate pod/namespace selectors.
+			}
+
+			// Case 1: Explicitly selected namespace
 			if peer.NamespaceSelector != nil {
 				nsSelector, err := metav1.LabelSelectorAsSelector(peer.NamespaceSelector)
 				if err != nil {
 					return false, fmt.Errorf("error parsing namespace selector: %w", err)
 				}
-
-				for _, ns := range namespacesByName {
-					if nsSelector.Matches(labels.Set(ns.Labels)) {
-						var podSelector labels.Selector
-						if peer.PodSelector != nil {
-							podSelector, err = metav1.LabelSelectorAsSelector(peer.PodSelector)
-							if err != nil {
-								return false, fmt.Errorf("error parsing pod selector: %w", err)
-							}
-						}
-
-						for _, pod := range podsByIP {
-							if pod.Namespace == ns.Name && pod.Status.PodIP == srcIP.String() {
-								if podSelector == nil || podSelector.Matches(labels.Set(pod.Labels)) {
-									return evaluatePorts(ingressRule.Ports, dstPort), nil
-								}
-							}
-						}
+				peerNs, ok := namespacesByName[peerPod.Namespace]
+				if !ok {
+					continue
+				}
+				if nsSelector.Matches(labels.Set(peerNs.Labels)) {
+					// We've matched the namespace, now check pod labels if a podSelector exists.
+					if peer.PodSelector == nil {
+						return evaluatePorts(ingressRule.Ports, dstPort), nil
+					}
+					podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
+					if err != nil {
+						return false, fmt.Errorf("error parsing pod selector: %w", err)
+					}
+					if podSelector.Matches(labels.Set(peerPod.Labels)) {
+						return evaluatePorts(ingressRule.Ports, dstPort), nil
 					}
 				}
-			} else if peer.PodSelector != nil {
-				podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
-				if err != nil {
-					return false, fmt.Errorf("error parsing pod selector: %w", err)
-				}
-				for _, pod := range podsByIP {
-					if pod.Status.PodIP == srcIP.String() {
-						if podSelector.Matches(labels.Set(pod.Labels)) {
-							return evaluatePorts(ingressRule.Ports, dstPort), nil
-						}
+			} else {
+				// Case 2: PodSelector without a NamespaceSelector (implicit same-namespace rule)
+				// Check if the source pod is in the same namespace as the policy.
+				if peerPod.Namespace == policyNamespace {
+					if peer.PodSelector == nil {
+						// This case should not be reached as peer.PodSelector is checked to be non-nil.
+						return evaluatePorts(ingressRule.Ports, dstPort), nil
+					}
+					podSelector, err := metav1.LabelSelectorAsSelector(peer.PodSelector)
+					if err != nil {
+						return false, fmt.Errorf("error parsing pod selector: %w", err)
+					}
+					if podSelector.Matches(labels.Set(peerPod.Labels)) {
+						return evaluatePorts(ingressRule.Ports, dstPort), nil
 					}
 				}
 			}
