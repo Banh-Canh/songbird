@@ -601,4 +601,75 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 			t.Fatal("expected connection to be denied because of an empty ingress list, but it was allowed")
 		}
 	})
+	t.Run("Ingress: should allow traffic when one policy allows and another denies", func(t *testing.T) {
+		// --- Setup ---
+		// A target pod selected by both policies
+		targetPod := newPod("api-server", "default", "10.1.1.1", map[string]string{"app": "api"})
+		// The source pod that should be allowed by the first policy
+		allowedSourcePod := newPod("client-app", "default", "10.1.1.2", map[string]string{"role": "client"})
+		// A different source pod that is NOT allowed by the first policy, but is by the second
+		otherAllowedSourcePod := newPod("metrics-scraper", "default", "10.1.1.3", map[string]string{"role": "monitoring"})
+
+		podsByIP := map[string]*v1.Pod{
+			targetPod.Status.PodIP:             targetPod,
+			allowedSourcePod.Status.PodIP:      allowedSourcePod,
+			otherAllowedSourcePod.Status.PodIP: otherAllowedSourcePod,
+		}
+		namespacesByName := map[string]*v1.Namespace{
+			"default": newNamespace("default", map[string]string{"kubernetes.io/metadata.name": "default"}),
+		}
+
+		// Policy A: Applies to 'app: api' and allows ingress from pods with 'role: client'
+		policyA := newNetworkPolicy("allow-clients", "default", labels.Set{"app": "api"}, networkingv1.PolicyTypeIngress)
+		policyA.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{
+			{
+				From: []networkingv1.NetworkPolicyPeer{
+					{PodSelector: &metav1.LabelSelector{MatchLabels: labels.Set{"role": "client"}}},
+				},
+			},
+		}
+
+		policyB := newNetworkPolicy("allow-monitoring", "default", labels.Set{"app": "api"}, networkingv1.PolicyTypeIngress)
+		policyB.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{
+			{
+				From: []networkingv1.NetworkPolicyPeer{
+					{PodSelector: &metav1.LabelSelector{MatchLabels: labels.Set{"role": "monitoring"}}},
+				},
+			},
+		}
+
+		allApplicablePolicies := []*networkingv1.NetworkPolicy{policyA, policyB}
+
+		allowed, err := networkpolicy.EvaluatePodConnectivity(
+			allApplicablePolicies,
+			networkingv1.PolicyTypeIngress,
+			targetPod,
+			net.ParseIP(allowedSourcePod.Status.PodIP),
+			8080,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !allowed {
+			t.Fatal("expected connection to be allowed by the union of policies, but it was denied")
+		}
+
+		denied, err := networkpolicy.EvaluatePodConnectivity(
+			allApplicablePolicies,
+			networkingv1.PolicyTypeIngress,
+			targetPod,
+			net.ParseIP("192.168.10.5"), // A random, un-allowed IP
+			8080,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error during deny check: %v", err)
+		}
+		if denied {
+			t.Fatal("expected connection from an unknown source to be denied, but it was allowed")
+		}
+	})
 }
