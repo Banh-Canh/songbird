@@ -41,7 +41,7 @@ let
       "-X github.com/Banh-Canh/songbird/cmd.version=nix"
     ];
 
-    vendorHash = "sha256-oJVInUpbO49Whd/4P5GUmq0lQBxpaOGIFM4SkwnC+Qg=";
+    vendorHash = "sha256-mrnAQTmG+KkCjvS1Efgt0NCaLR3KbQYo2MBe6VY9LL0=";
 
     subPackages = [ "." ];
   };
