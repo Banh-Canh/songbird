@@ -36,11 +36,20 @@ var checkCmd = &cobra.Command{
 It relies on ip and port input. The ip can be the ip of a pod.
 It will automatically check for labels and selectors and verify that this ip is allowed in ingress or egress.
 
-Example:
+If no address or pod is specified, interactive mode will be started with fuzzy finder menus.
+If an address is specified, you can interactively select the source namespace.
 
-songbird netpol check -a 10.1.0.225 -p 40 -d ingress -n my-namespace
+Examples:
 
+# Specify target directly
+songbird netpol check -a 10.1.0.225 -p 80 -d ingress -n my-namespace
 songbird netpol check -P my-namespace/my-app-pod -p 80 -d ingress -n another-namespace
+
+# Interactive source selection with target address
+songbird netpol check -a 10.1.0.225 -p 80 -d all
+
+# Full interactive mode (will show fuzzy finder menus for source and destination)
+songbird netpol check -p 80 -d all
 `,
 	Run: func(cmd *cobra.Command, args []string) {
 		// Load kubeconfig
@@ -59,7 +68,15 @@ songbird netpol check -P my-namespace/my-app-pod -p 80 -d ingress -n another-nam
 		}
 		ctx := context.Background()
 
+		// Validate port for direct mode
+		if (addressFlag != "" || targetPodFlag != "") && portFlag == 0 {
+			logger.Logger.Error("port must be specified (-p flag) when using direct IP or pod mode")
+			return
+		}
+
 		var targetIP net.IP
+		var sourceNamespace string
+
 		if targetPodFlag != "" {
 			parts := strings.Split(targetPodFlag, "/")
 			if len(parts) != 2 {
@@ -90,13 +107,52 @@ songbird netpol check -P my-namespace/my-app-pod -p 80 -d ingress -n another-nam
 				logger.Logger.Error("invalid IP address", slog.String("addressIP", addressFlag))
 				return
 			}
+
+			// When address is specified, allow interactive source selection
+			selector := networkpolicy.NewInteractiveSelector(clientset, ctx)
+
+			// Check permissions first
+			if err := selector.CheckPermissions(); err != nil {
+				logger.Logger.Error("permission check failed", slog.Any("error", err))
+				return
+			}
+
+			// Select source namespace
+			sourceNs, err := selector.SelectNamespaceWithPrompt("Source namespace > ")
+			if err != nil {
+				logger.Logger.Error("failed to select source namespace", slog.Any("error", err))
+				return
+			}
+			sourceNamespace = sourceNs.Name
+
 		} else {
-			logger.Logger.Error("either an IP address or a pod name must be provided")
+			// No address or pod specified - start full interactive mode
+
+			// Check if port is specified for interactive mode
+			if portFlag == 0 {
+				logger.Logger.Error("port must be specified (-p flag)")
+				return
+			}
+
+			// Create interactive selector
+			selector := networkpolicy.NewInteractiveSelector(clientset, ctx)
+
+			// Run interactive network policy check
+			if err := selector.InteractiveNetworkPolicyCheck(portFlag, directionFlag, outputFlag, deniedOnlyFlag); err != nil {
+				logger.Logger.Error("interactive network policy check failed", slog.Any("error", err))
+				return
+			}
 			return
 		}
 
+		// Use the selected source namespace if available, otherwise fall back to the namespace flag
+		finalNamespace := namespaceFlag
+		if sourceNamespace != "" {
+			finalNamespace = sourceNamespace
+		}
+
 		// Call the reusable function with the parameters from the flags
-		if err := networkpolicy.RunNetpolCheck(ctx, clientset, targetIP, portFlag, namespaceFlag, directionFlag, outputFlag, deniedOnlyFlag); err != nil {
+		if err := networkpolicy.RunNetpolCheck(ctx, clientset, targetIP, portFlag, finalNamespace, directionFlag, outputFlag, deniedOnlyFlag); err != nil {
 			logger.Logger.Error("network policy check failed", slog.Any("error", err))
 			return
 		}
@@ -115,5 +171,5 @@ func init() {
 	checkCmd.Flags().BoolVarP(&deniedOnlyFlag, "denied-only", "", false, "only display denied traffic")
 
 	checkCmd.MarkFlagsMutuallyExclusive("address", "pod")
-	checkCmd.MarkFlagRequired("port") //nolint:all
+	// Port is required when using direct IP/pod mode, but will be validated at runtime
 }

@@ -192,37 +192,46 @@ func TestGetAllAffectingNetworkPolicies(t *testing.T) {
 	})
 }
 
-// Test for EvaluatePodConnectivity
+// Test for EvaluatePodConnectivity - Comprehensive network policy test scenarios
 func TestEvaluatePodConnectivity(t *testing.T) {
-	// Setup pods and namespaces for the test scenarios
-	targetPod := newPod("target-pod", "target-namespace", "10.0.0.10", map[string]string{"app": "api"})
-	peerPod := newPod("peer-pod", "peer-namespace", "10.0.0.5", map[string]string{"app": "client"})
-	podsByIP := map[string]*v1.Pod{
-		targetPod.Status.PodIP: targetPod,
-		peerPod.Status.PodIP:   peerPod,
+	// Common setup for all test scenarios
+	setupPods := func() (map[string]*v1.Pod, map[string]*v1.Namespace) {
+		targetPod := newPod("target-pod", "target-namespace", "10.0.0.10", map[string]string{"app": "api", "tier": "backend"})
+		peerPod := newPod("peer-pod", "peer-namespace", "10.0.0.5", map[string]string{"app": "client", "tier": "frontend"})
+		samePod := newPod("same-pod", "target-namespace", "10.0.0.11", map[string]string{"app": "worker"})
+		
+		podsByIP := map[string]*v1.Pod{
+			targetPod.Status.PodIP: targetPod,
+			peerPod.Status.PodIP:   peerPod,
+			samePod.Status.PodIP:   samePod,
+		}
+		namespacesByName := map[string]*v1.Namespace{
+			"peer-namespace":   newNamespace("peer-namespace", map[string]string{"env": "prod", "zone": "us-east"}),
+			"target-namespace": newNamespace("target-namespace", map[string]string{"kubernetes.io/metadata.name": "target-namespace", "env": "prod"}),
+		}
+		return podsByIP, namespacesByName
 	}
-	namespacesByName := map[string]*v1.Namespace{
-		"peer-namespace":   newNamespace("peer-namespace", map[string]string{"env": "prod"}),
-		"target-namespace": newNamespace("target-namespace", map[string]string{"kubernetes.io/metadata.name": targetPod.Namespace}),
-	}
+	
+	podsByIP, namespacesByName := setupPods()
+	targetPod := podsByIP["10.0.0.10"]
+	peerPod := podsByIP["10.0.0.5"]
 
-	t.Run("Ingress: should allow connection if a policy explicitly allows it", func(t *testing.T) {
+	// Test 1: Basic Ingress - Allow specific pod from specific namespace
+	t.Run("Ingress: should allow connection when policy explicitly allows specific pod from specific namespace", func(t *testing.T) {
 		ingressPolicy := &networkingv1.NetworkPolicy{
 			ObjectMeta: metav1.ObjectMeta{
-				Namespace: peerPod.Namespace,
+				Name:      "allow-specific-pod",
+				Namespace: targetPod.Namespace,
 			},
 			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
 				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 				Ingress: []networkingv1.NetworkPolicyIngressRule{
 					{
 						From: []networkingv1.NetworkPolicyPeer{
 							{
-								PodSelector: &metav1.LabelSelector{MatchLabels: targetPod.Labels},
-								NamespaceSelector: &metav1.LabelSelector{
-									MatchLabels: map[string]string{
-										"kubernetes.io/metadata.name": targetPod.Namespace,
-									},
-								},
+								PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+								NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
 							},
 						},
 						Ports: []networkingv1.NetworkPolicyPort{
@@ -235,8 +244,8 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 		allowed, err := networkpolicy.EvaluatePodConnectivity(
 			[]*networkingv1.NetworkPolicy{ingressPolicy},
 			networkingv1.PolicyTypeIngress,
-			peerPod,
-			net.ParseIP(targetPod.Status.PodIP),
+			targetPod,
+			net.ParseIP(peerPod.Status.PodIP),
 			8080,
 			podsByIP,
 			namespacesByName,
@@ -249,17 +258,20 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 		}
 	})
 
-	t.Run("Ingress: should deny connection if no policy allows it", func(t *testing.T) {
+	// Test 2: Ingress Deny - Wrong pod labels
+	t.Run("Ingress: should deny connection when pod labels don't match policy", func(t *testing.T) {
 		ingressPolicy := &networkingv1.NetworkPolicy{
 			ObjectMeta: metav1.ObjectMeta{
-				Namespace: peerPod.Namespace,
+				Name:      "deny-wrong-labels",
+				Namespace: targetPod.Namespace,
 			},
 			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
 				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 				Ingress: []networkingv1.NetworkPolicyIngressRule{
 					{
 						From: []networkingv1.NetworkPolicyPeer{
-							{PodSelector: &metav1.LabelSelector{MatchLabels: labels.Set{"app": "non-matching-app"}}},
+							{PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "non-existent"}}},
 						},
 					},
 				},
@@ -268,8 +280,8 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 		allowed, err := networkpolicy.EvaluatePodConnectivity(
 			[]*networkingv1.NetworkPolicy{ingressPolicy},
 			networkingv1.PolicyTypeIngress,
-			peerPod,
-			net.ParseIP(targetPod.Status.PodIP),
+			targetPod,
+			net.ParseIP(peerPod.Status.PodIP),
 			8080,
 			podsByIP,
 			namespacesByName,
@@ -282,23 +294,22 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 		}
 	})
 
-	t.Run("Egress: should allow connection if a policy explicitly allows it", func(t *testing.T) {
+	// Test 3: Basic Egress - Allow specific destination
+	t.Run("Egress: should allow connection when policy explicitly allows specific destination", func(t *testing.T) {
 		egressPolicy := &networkingv1.NetworkPolicy{
 			ObjectMeta: metav1.ObjectMeta{
+				Name:      "allow-specific-destination",
 				Namespace: peerPod.Namespace,
 			},
 			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
 				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
 				Egress: []networkingv1.NetworkPolicyEgressRule{
 					{
 						To: []networkingv1.NetworkPolicyPeer{
 							{
-								PodSelector: &metav1.LabelSelector{MatchLabels: targetPod.Labels},
-								NamespaceSelector: &metav1.LabelSelector{
-									MatchLabels: map[string]string{
-										"kubernetes.io/metadata.name": targetPod.Namespace,
-									},
-								},
+								PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+								NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
 							},
 						},
 						Ports: []networkingv1.NetworkPolicyPort{
@@ -670,6 +681,795 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 		}
 		if denied {
 			t.Fatal("expected connection from an unknown source to be denied, but it was allowed")
+		}
+	})
+
+	// Test 11: Port-specific rules
+	t.Run("Should respect port restrictions in network policies", func(t *testing.T) {
+		portPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "port-specific",
+				Namespace: targetPod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				Ingress: []networkingv1.NetworkPolicyIngressRule{{
+					From: []networkingv1.NetworkPolicyPeer{{
+						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
+					}},
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 8080}}, // Only allow port 8080
+					},
+				}},
+			},
+		}
+
+		// Test allowed port 8080
+		allowed, err := networkpolicy.EvaluatePodConnectivity(
+			[]*networkingv1.NetworkPolicy{portPolicy},
+			networkingv1.PolicyTypeIngress,
+			targetPod,
+			net.ParseIP(peerPod.Status.PodIP),
+			8080,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !allowed {
+			t.Fatal("expected connection on port 8080 to be allowed")
+		}
+
+		// Test denied port 80
+		allowed, err = networkpolicy.EvaluatePodConnectivity(
+			[]*networkingv1.NetworkPolicy{portPolicy},
+			networkingv1.PolicyTypeIngress,
+			targetPod,
+			net.ParseIP(peerPod.Status.PodIP),
+			80,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if allowed {
+			t.Fatal("expected connection on port 80 to be denied")
+		}
+	})
+
+	// Test 12: No network policies (default allow)
+	t.Run("Should allow all traffic when no network policies are applied", func(t *testing.T) {
+		// Test with empty policy list
+		allowed, err := networkpolicy.EvaluatePodConnectivity(
+			[]*networkingv1.NetworkPolicy{}, // No policies
+			networkingv1.PolicyTypeIngress,
+			targetPod,
+			net.ParseIP(peerPod.Status.PodIP),
+			8080,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !allowed {
+			t.Fatal("expected connection to be allowed when no policies are present")
+		}
+
+		allowed, err = networkpolicy.EvaluatePodConnectivity(
+			[]*networkingv1.NetworkPolicy{},
+			networkingv1.PolicyTypeEgress,
+			peerPod,
+			net.ParseIP(targetPod.Status.PodIP),
+			8080,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !allowed {
+			t.Fatal("expected egress connection to be allowed when no policies are present")
+		}
+	})
+
+	// Test 13: Namespace selector only (no pod selector)
+	t.Run("Should handle namespace-only selectors correctly", func(t *testing.T) {
+		namespaceOnlyPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "namespace-only",
+				Namespace: targetPod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				Ingress: []networkingv1.NetworkPolicyIngressRule{{
+					From: []networkingv1.NetworkPolicyPeer{{
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
+						// No PodSelector means all pods in matching namespaces
+					}},
+				}},
+			},
+		}
+
+		// Should allow traffic from any pod in a namespace with env=prod
+		allowed, err := networkpolicy.EvaluatePodConnectivity(
+			[]*networkingv1.NetworkPolicy{namespaceOnlyPolicy},
+			networkingv1.PolicyTypeIngress,
+			targetPod,
+			net.ParseIP(peerPod.Status.PodIP), // From peer-namespace with env=prod
+			8080,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !allowed {
+			t.Fatal("expected connection from prod namespace to be allowed")
+		}
+	})
+
+	// Test 14: Port ranges
+	t.Run("Should handle port ranges correctly", func(t *testing.T) {
+		portRangePolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "port-range",
+				Namespace: targetPod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				Ingress: []networkingv1.NetworkPolicyIngressRule{{
+					From: []networkingv1.NetworkPolicyPeer{{
+						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
+					}},
+					Ports: []networkingv1.NetworkPolicyPort{{
+						Port:    &intstr.IntOrString{Type: intstr.Int, IntVal: 8080},
+						EndPort: func() *int32 { p := int32(8090); return &p }(), // Port range 8080-8090
+					}},
+				}},
+			},
+		}
+
+		// Test port within range
+		allowed, err := networkpolicy.EvaluatePodConnectivity(
+			[]*networkingv1.NetworkPolicy{portRangePolicy},
+			networkingv1.PolicyTypeIngress,
+			targetPod,
+			net.ParseIP(peerPod.Status.PodIP),
+			8085, // Within range 8080-8090
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !allowed {
+			t.Fatal("expected connection on port 8085 (within range) to be allowed")
+		}
+
+		// Test port outside range
+		allowed, err = networkpolicy.EvaluatePodConnectivity(
+			[]*networkingv1.NetworkPolicy{portRangePolicy},
+			networkingv1.PolicyTypeIngress,
+			targetPod,
+			net.ParseIP(peerPod.Status.PodIP),
+			9000, // Outside range
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if allowed {
+			t.Fatal("expected connection on port 9000 (outside range) to be denied")
+		}
+	})
+}
+
+// TestEndToEndNetworkPolicyValidation tests the core requirement:
+// Traffic must be allowed in BOTH source egress AND destination ingress for connection to succeed
+func TestEndToEndNetworkPolicyValidation(t *testing.T) {
+	// Setup test pods and namespaces
+	sourcePod := newPod("client-pod", "client-ns", "10.0.1.5", map[string]string{"app": "client", "role": "frontend"})
+	destPod := newPod("api-pod", "api-ns", "10.0.2.10", map[string]string{"app": "api", "role": "backend"})
+	
+	podsByIP := map[string]*v1.Pod{
+		sourcePod.Status.PodIP: sourcePod,
+		destPod.Status.PodIP:   destPod,
+	}
+	namespacesByName := map[string]*v1.Namespace{
+		"client-ns": newNamespace("client-ns", map[string]string{"tier": "frontend", "env": "prod"}),
+		"api-ns":    newNamespace("api-ns", map[string]string{"tier": "backend", "env": "prod"}),
+	}
+
+	t.Run("Should ALLOW when BOTH source egress AND destination ingress allow", func(t *testing.T) {
+		// Source egress policy - allows egress to api pods in backend tier
+		sourceEgressPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "client-egress-allow",
+				Namespace: sourcePod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+				Egress: []networkingv1.NetworkPolicyEgressRule{{
+					To: []networkingv1.NetworkPolicyPeer{{
+						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "backend"}},
+					}},
+					Ports: []networkingv1.NetworkPolicyPort{{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 8080}}},
+				}},
+			},
+		}
+
+		// Destination ingress policy - allows ingress from client pods in frontend tier
+		destIngressPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "api-ingress-allow",
+				Namespace: destPod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				Ingress: []networkingv1.NetworkPolicyIngressRule{{
+					From: []networkingv1.NetworkPolicyPeer{{
+						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "frontend"}},
+					}},
+					Ports: []networkingv1.NetworkPolicyPort{{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 8080}}},
+				}},
+			},
+		}
+
+		// Get source egress policies
+		sourceEgressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(sourcePod, []*networkingv1.NetworkPolicy{sourceEgressPolicy})
+		if err != nil {
+			t.Fatalf("failed to get source egress policies: %v", err)
+		}
+
+		// Get destination ingress policies
+		destIngressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(destPod, []*networkingv1.NetworkPolicy{destIngressPolicy})
+		if err != nil {
+			t.Fatalf("failed to get destination ingress policies: %v", err)
+		}
+
+		// Test egress from source
+		egressAllowed, err := networkpolicy.EvaluatePodConnectivity(
+			sourceEgressPolicies,
+			networkingv1.PolicyTypeEgress,
+			sourcePod,
+			net.ParseIP(destPod.Status.PodIP),
+			8080,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("failed to evaluate egress: %v", err)
+		}
+
+		// Test ingress to destination
+		ingressAllowed, err := networkpolicy.EvaluatePodConnectivity(
+			destIngressPolicies,
+			networkingv1.PolicyTypeIngress,
+			destPod,
+			net.ParseIP(sourcePod.Status.PodIP),
+			8080,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("failed to evaluate ingress: %v", err)
+		}
+
+		// Both must be true for connection to succeed
+		bothAllowed := egressAllowed && ingressAllowed
+
+		if !bothAllowed {
+			t.Fatalf("expected connection to be allowed (egress: %v, ingress: %v), but overall result was denied", egressAllowed, ingressAllowed)
+		}
+	})
+
+	t.Run("Should DENY when source egress allows but destination ingress denies", func(t *testing.T) {
+		// Source egress policy - allows egress to api pods
+		sourceEgressPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "client-egress-allow",
+				Namespace: sourcePod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+				Egress: []networkingv1.NetworkPolicyEgressRule{{
+					To: []networkingv1.NetworkPolicyPeer{{
+						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "backend"}},
+					}},
+					Ports: []networkingv1.NetworkPolicyPort{{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 8080}}},
+				}},
+			},
+		}
+
+		// Destination ingress policy - DENIES ingress (only allows from monitoring pods, not client pods)
+		destIngressPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "api-ingress-deny-clients",
+				Namespace: destPod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				Ingress: []networkingv1.NetworkPolicyIngressRule{{
+					From: []networkingv1.NetworkPolicyPeer{{
+						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "monitoring"}}, // Only monitoring, not client
+					}},
+				}},
+			},
+		}
+
+		sourceEgressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(sourcePod, []*networkingv1.NetworkPolicy{sourceEgressPolicy})
+		if err != nil {
+			t.Fatalf("failed to get source egress policies: %v", err)
+		}
+
+		destIngressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(destPod, []*networkingv1.NetworkPolicy{destIngressPolicy})
+		if err != nil {
+			t.Fatalf("failed to get destination ingress policies: %v", err)
+		}
+
+		// Test egress from source (should be allowed)
+		egressAllowed, err := networkpolicy.EvaluatePodConnectivity(
+			sourceEgressPolicies,
+			networkingv1.PolicyTypeEgress,
+			sourcePod,
+			net.ParseIP(destPod.Status.PodIP),
+			8080,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("failed to evaluate egress: %v", err)
+		}
+
+		// Test ingress to destination (should be denied)
+		ingressAllowed, err := networkpolicy.EvaluatePodConnectivity(
+			destIngressPolicies,
+			networkingv1.PolicyTypeIngress,
+			destPod,
+			net.ParseIP(sourcePod.Status.PodIP),
+			8080,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("failed to evaluate ingress: %v", err)
+		}
+
+		// Connection should be denied because ingress is denied (even though egress is allowed)
+		bothAllowed := egressAllowed && ingressAllowed
+
+		if bothAllowed {
+			t.Fatalf("expected connection to be denied (egress: %v, ingress: %v), but overall result was allowed", egressAllowed, ingressAllowed)
+		}
+
+		// Verify that egress is allowed but ingress is denied
+		if !egressAllowed {
+			t.Fatal("expected egress to be allowed")
+		}
+		if ingressAllowed {
+			t.Fatal("expected ingress to be denied")
+		}
+	})
+
+	t.Run("Should DENY when destination ingress allows but source egress denies", func(t *testing.T) {
+		// Source egress policy - DENIES egress (only allows to monitoring pods, not api pods)
+		sourceEgressPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "client-egress-deny-api",
+				Namespace: sourcePod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+				Egress: []networkingv1.NetworkPolicyEgressRule{{
+					To: []networkingv1.NetworkPolicyPeer{{
+						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "monitoring"}}, // Only monitoring, not api
+					}},
+				}},
+			},
+		}
+
+		// Destination ingress policy - allows ingress from client pods
+		destIngressPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "api-ingress-allow-clients",
+				Namespace: destPod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				Ingress: []networkingv1.NetworkPolicyIngressRule{{
+					From: []networkingv1.NetworkPolicyPeer{{
+						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "frontend"}},
+					}},
+					Ports: []networkingv1.NetworkPolicyPort{{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 8080}}},
+				}},
+			},
+		}
+
+		sourceEgressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(sourcePod, []*networkingv1.NetworkPolicy{sourceEgressPolicy})
+		if err != nil {
+			t.Fatalf("failed to get source egress policies: %v", err)
+		}
+
+		destIngressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(destPod, []*networkingv1.NetworkPolicy{destIngressPolicy})
+		if err != nil {
+			t.Fatalf("failed to get destination ingress policies: %v", err)
+		}
+
+		// Test egress from source (should be denied)
+		egressAllowed, err := networkpolicy.EvaluatePodConnectivity(
+			sourceEgressPolicies,
+			networkingv1.PolicyTypeEgress,
+			sourcePod,
+			net.ParseIP(destPod.Status.PodIP),
+			8080,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("failed to evaluate egress: %v", err)
+		}
+
+		// Test ingress to destination (should be allowed)
+		ingressAllowed, err := networkpolicy.EvaluatePodConnectivity(
+			destIngressPolicies,
+			networkingv1.PolicyTypeIngress,
+			destPod,
+			net.ParseIP(sourcePod.Status.PodIP),
+			8080,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("failed to evaluate ingress: %v", err)
+		}
+
+		// Connection should be denied because egress is denied (even though ingress is allowed)
+		bothAllowed := egressAllowed && ingressAllowed
+
+		if bothAllowed {
+			t.Fatalf("expected connection to be denied (egress: %v, ingress: %v), but overall result was allowed", egressAllowed, ingressAllowed)
+		}
+
+		// Verify that ingress is allowed but egress is denied
+		if egressAllowed {
+			t.Fatal("expected egress to be denied")
+		}
+		if !ingressAllowed {
+			t.Fatal("expected ingress to be allowed")
+		}
+	})
+
+	t.Run("Should DENY when both source egress AND destination ingress deny", func(t *testing.T) {
+		// Source egress policy - denies all egress
+		sourceEgressPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "client-egress-deny-all",
+				Namespace: sourcePod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+				Egress:      []networkingv1.NetworkPolicyEgressRule{}, // Empty = deny all
+			},
+		}
+
+		// Destination ingress policy - denies all ingress
+		destIngressPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "api-ingress-deny-all",
+				Namespace: destPod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				Ingress:     []networkingv1.NetworkPolicyIngressRule{}, // Empty = deny all
+			},
+		}
+
+		sourceEgressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(sourcePod, []*networkingv1.NetworkPolicy{sourceEgressPolicy})
+		if err != nil {
+			t.Fatalf("failed to get source egress policies: %v", err)
+		}
+
+		destIngressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(destPod, []*networkingv1.NetworkPolicy{destIngressPolicy})
+		if err != nil {
+			t.Fatalf("failed to get destination ingress policies: %v", err)
+		}
+
+		// Test egress from source (should be denied)
+		egressAllowed, err := networkpolicy.EvaluatePodConnectivity(
+			sourceEgressPolicies,
+			networkingv1.PolicyTypeEgress,
+			sourcePod,
+			net.ParseIP(destPod.Status.PodIP),
+			8080,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("failed to evaluate egress: %v", err)
+		}
+
+		// Test ingress to destination (should be denied)
+		ingressAllowed, err := networkpolicy.EvaluatePodConnectivity(
+			destIngressPolicies,
+			networkingv1.PolicyTypeIngress,
+			destPod,
+			net.ParseIP(sourcePod.Status.PodIP),
+			8080,
+			podsByIP,
+			namespacesByName,
+		)
+		if err != nil {
+			t.Fatalf("failed to evaluate ingress: %v", err)
+		}
+
+		// Both should be denied
+		bothAllowed := egressAllowed && ingressAllowed
+
+		if bothAllowed {
+			t.Fatalf("expected connection to be denied (egress: %v, ingress: %v), but overall result was allowed", egressAllowed, ingressAllowed)
+		}
+
+		// Verify both are denied
+		if egressAllowed {
+			t.Fatal("expected egress to be denied")
+		}
+		if ingressAllowed {
+			t.Fatal("expected ingress to be denied")
+		}
+	})
+}
+
+// TestEvaluateFullConnectivity tests the comprehensive bidirectional evaluation
+func TestEvaluateFullConnectivity(t *testing.T) {
+	// Setup test environment
+	sourcePod := newPod("client-pod", "frontend", "10.0.1.5", map[string]string{"app": "client", "tier": "web"})
+	destPod := newPod("api-pod", "backend", "10.0.2.10", map[string]string{"app": "api", "tier": "service"})
+	
+	podsByIP := map[string]*v1.Pod{
+		sourcePod.Status.PodIP: sourcePod,
+		destPod.Status.PodIP:   destPod,
+	}
+	namespacesByName := map[string]*v1.Namespace{
+		"frontend": newNamespace("frontend", map[string]string{"tier": "web", "env": "prod"}),
+		"backend":  newNamespace("backend", map[string]string{"tier": "service", "env": "prod"}),
+	}
+
+	t.Run("Should ALLOW when both source egress and destination ingress allow", func(t *testing.T) {
+		// Source egress policy: allows connection to API pods
+		sourceEgressPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "client-egress",
+				Namespace: sourcePod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+				Egress: []networkingv1.NetworkPolicyEgressRule{{
+					To: []networkingv1.NetworkPolicyPeer{{
+						PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "service"}},
+					}},
+					Ports: []networkingv1.NetworkPolicyPort{{
+						Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 8080},
+					}},
+				}},
+			},
+		}
+
+		// Destination ingress policy: allows connection from client pods
+		destIngressPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "api-ingress",
+				Namespace: destPod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				Ingress: []networkingv1.NetworkPolicyIngressRule{{
+					From: []networkingv1.NetworkPolicyPeer{{
+						PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "web"}},
+					}},
+					Ports: []networkingv1.NetworkPolicyPort{{
+						Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 8080},
+					}},
+				}},
+			},
+		}
+
+		allPolicies := []*networkingv1.NetworkPolicy{sourceEgressPolicy, destIngressPolicy}
+
+		allowed, err := networkpolicy.EvaluateFullConnectivity(
+			sourcePod, destPod, 8080, allPolicies, podsByIP, namespacesByName)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !allowed {
+			t.Fatal("expected connection to be allowed when both egress and ingress policies allow")
+		}
+	})
+
+	t.Run("Should DENY when source egress allows but destination ingress denies", func(t *testing.T) {
+		// Source egress policy: allows all egress
+		sourceEgressPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "client-egress-allow",
+				Namespace: sourcePod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+				Egress: []networkingv1.NetworkPolicyEgressRule{{
+					To: []networkingv1.NetworkPolicyPeer{{
+						PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "service"}},
+					}},
+				}},
+			},
+		}
+
+		// Destination ingress policy: denies all ingress (empty rules)
+		destIngressPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "api-ingress-deny",
+				Namespace: destPod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				Ingress:     []networkingv1.NetworkPolicyIngressRule{}, // Empty = deny all
+			},
+		}
+
+		allPolicies := []*networkingv1.NetworkPolicy{sourceEgressPolicy, destIngressPolicy}
+
+		allowed, err := networkpolicy.EvaluateFullConnectivity(
+			sourcePod, destPod, 8080, allPolicies, podsByIP, namespacesByName)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if allowed {
+			t.Fatal("expected connection to be denied when destination ingress policy denies")
+		}
+	})
+
+	t.Run("Should DENY when destination ingress allows but source egress denies", func(t *testing.T) {
+		// Source egress policy: denies all egress (empty rules)
+		sourceEgressPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "client-egress-deny",
+				Namespace: sourcePod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+				Egress:      []networkingv1.NetworkPolicyEgressRule{}, // Empty = deny all
+			},
+		}
+
+		// Destination ingress policy: allows all ingress from client
+		destIngressPolicy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "api-ingress-allow",
+				Namespace: destPod.Namespace,
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				Ingress: []networkingv1.NetworkPolicyIngressRule{{
+					From: []networkingv1.NetworkPolicyPeer{{
+						PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "web"}},
+					}},
+				}},
+			},
+		}
+
+		allPolicies := []*networkingv1.NetworkPolicy{sourceEgressPolicy, destIngressPolicy}
+
+		allowed, err := networkpolicy.EvaluateFullConnectivity(
+			sourcePod, destPod, 8080, allPolicies, podsByIP, namespacesByName)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if allowed {
+			t.Fatal("expected connection to be denied when source egress policy denies")
+		}
+	})
+
+	t.Run("Should ALLOW when no policies apply (default allow)", func(t *testing.T) {
+		allPolicies := []*networkingv1.NetworkPolicy{} // No policies
+
+		allowed, err := networkpolicy.EvaluateFullConnectivity(
+			sourcePod, destPod, 8080, allPolicies, podsByIP, namespacesByName)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !allowed {
+			t.Fatal("expected connection to be allowed when no policies apply (default allow)")
+		}
+	})
+}
+
+// TestFilterPoliciesByType verifies that only relevant policies are shown in output
+func TestFilterPoliciesByType(t *testing.T) {
+	// Create policies with different policy types
+	egressOnlyPolicy := newNetworkPolicy("egress-only", "default", labels.Set{"app": "client"}, networkingv1.PolicyTypeEgress)
+	ingressOnlyPolicy := newNetworkPolicy("ingress-only", "default", labels.Set{"app": "client"}, networkingv1.PolicyTypeIngress)
+	bothTypesPolicy := newNetworkPolicy("both-types", "default", labels.Set{"app": "client"}, networkingv1.PolicyTypeEgress, networkingv1.PolicyTypeIngress)
+	
+	allPolicies := []*networkingv1.NetworkPolicy{egressOnlyPolicy, ingressOnlyPolicy, bothTypesPolicy}
+	
+	t.Run("Should filter to only egress policies", func(t *testing.T) {
+		filtered := networkpolicy.FilterPoliciesByType(allPolicies, networkingv1.PolicyTypeEgress)
+		
+		if len(filtered) != 2 {
+			t.Fatalf("expected 2 egress policies, got %d", len(filtered))
+		}
+		
+		// Should contain egress-only and both-types
+		foundEgressOnly := false
+		foundBothTypes := false
+		for _, policy := range filtered {
+			switch policy.Name {
+			case "egress-only":
+				foundEgressOnly = true
+			case "both-types":
+				foundBothTypes = true
+			case "ingress-only":
+				t.Fatal("ingress-only policy should not be in egress filter")
+			}
+		}
+		
+		if !foundEgressOnly || !foundBothTypes {
+			t.Fatal("expected to find both egress-only and both-types policies")
+		}
+	})
+	
+	t.Run("Should filter to only ingress policies", func(t *testing.T) {
+		filtered := networkpolicy.FilterPoliciesByType(allPolicies, networkingv1.PolicyTypeIngress)
+		
+		if len(filtered) != 2 {
+			t.Fatalf("expected 2 ingress policies, got %d", len(filtered))
+		}
+		
+		// Should contain ingress-only and both-types
+		foundIngressOnly := false
+		foundBothTypes := false
+		for _, policy := range filtered {
+			switch policy.Name {
+			case "ingress-only":
+				foundIngressOnly = true
+			case "both-types":
+				foundBothTypes = true
+			case "egress-only":
+				t.Fatal("egress-only policy should not be in ingress filter")
+			}
+		}
+		
+		if !foundIngressOnly || !foundBothTypes {
+			t.Fatal("expected to find both ingress-only and both-types policies")
 		}
 	})
 }
