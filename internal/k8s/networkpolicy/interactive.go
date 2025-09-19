@@ -13,8 +13,8 @@ import (
 	"github.com/ktr0731/go-fuzzyfinder"
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -25,7 +25,7 @@ type NamespaceItem struct {
 	Description string
 }
 
-// PodItem represents a pod in the interactive selector  
+// PodItem represents a pod in the interactive selector
 type PodItem struct {
 	Name        string
 	Namespace   string
@@ -49,7 +49,7 @@ func NewInteractiveSelector(clientset kubernetes.Interface, ctx context.Context)
 	}
 }
 
-// SelectNamespace shows an interactive namespace selector  
+// SelectNamespace shows an interactive namespace selector
 func (s *InteractiveSelector) SelectNamespace() (*NamespaceItem, error) {
 	return s.SelectNamespaceWithPrompt("Namespace > ")
 }
@@ -83,7 +83,6 @@ func (s *InteractiveSelector) SelectNamespaceWithPrompt(prompt string) (*Namespa
 		}),
 		fuzzyfinder.WithPromptString(prompt),
 	)
-	
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +121,6 @@ func (s *InteractiveSelector) SelectPod(namespace, title string) (*PodItem, erro
 		}),
 		fuzzyfinder.WithPromptString(fmt.Sprintf("%s > ", title)),
 	)
-	
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +193,7 @@ func (s *InteractiveSelector) listPodsInNamespace(namespace string) ([]PodItem, 
 
 		status := string(pod.Status.Phase)
 		ready := s.getPodReadiness(&pod)
-		
+
 		description := ""
 		if pod.Labels != nil && len(pod.Labels) > 0 {
 			var importantLabels []string
@@ -227,7 +225,6 @@ func (s *InteractiveSelector) listPodsInNamespace(namespace string) ([]PodItem, 
 
 	return pods, nil
 }
-
 
 // getPodReadiness calculates pod readiness status
 func (s *InteractiveSelector) getPodReadiness(pod *v1.Pod) string {
@@ -266,7 +263,10 @@ func (s *InteractiveSelector) CheckPermissions() error {
 	_, err := s.clientset.CoreV1().Namespaces().List(s.ctx, metav1.ListOptions{Limit: 1})
 	if err != nil {
 		if errors.IsForbidden(err) {
-			return fmt.Errorf("insufficient permissions: %w\n\nYou need at least the following permissions:\n- namespaces: list, get\n- pods: list, get\n- networkpolicies: list, get", err)
+			return fmt.Errorf(
+				"insufficient permissions: %w\n\nYou need at least the following permissions:\n- namespaces: list, get\n- pods: list, get\n- networkpolicies: list, get",
+				err,
+			)
 		}
 		return fmt.Errorf("failed to check permissions: %w", err)
 	}
@@ -297,7 +297,6 @@ func (s *InteractiveSelector) InteractiveNetworkPolicyCheck(port int, direction 
 	if err != nil {
 		return fmt.Errorf("failed to select destination namespace: %w", err)
 	}
-
 
 	// Step 6: Use RunPodToNamespaceCheck for consistent output with pod-to-address
 	if clientset, ok := s.clientset.(*kubernetes.Clientset); ok {
@@ -380,7 +379,7 @@ func (s *InteractiveSelector) RunPodToNamespaceCheck(
 	default:
 		return fmt.Errorf("invalid direction: %s", direction)
 	}
-	
+
 	var results []CheckResult
 	allowedCount := 0
 	deniedCount := 0
@@ -408,8 +407,24 @@ func (s *InteractiveSelector) RunPodToNamespaceCheck(
 				if dir.policyType == networkingv1.PolicyTypeEgress {
 					// Evaluate egress from source to destination
 					egressPolicies := FilterPoliciesByType(relevantPolicies, networkingv1.PolicyTypeEgress)
-					allowed, evalErr = EvaluatePodConnectivity(egressPolicies, networkingv1.PolicyTypeEgress, srcPodObj, destIP, port, podsByIP, namespacesByName)
-					effectivePolicies = GetEffectivePoliciesForConnection(egressPolicies, networkingv1.PolicyTypeEgress, srcPodObj, destIP, port, podsByIP, namespacesByName)
+					allowed, evalErr = EvaluatePodConnectivity(
+						egressPolicies,
+						networkingv1.PolicyTypeEgress,
+						srcPodObj,
+						destIP,
+						port,
+						podsByIP,
+						namespacesByName,
+					)
+					effectivePolicies = GetEffectivePoliciesForConnection(
+						egressPolicies,
+						networkingv1.PolicyTypeEgress,
+						srcPodObj,
+						destIP,
+						port,
+						podsByIP,
+						namespacesByName,
+					)
 				} else {
 					// Evaluate ingress to destination from source
 					ingressPolicies := FilterPoliciesByType(relevantPolicies, networkingv1.PolicyTypeIngress)
@@ -525,4 +540,3 @@ func (s *InteractiveSelector) RunPodToNamespaceCheck(
 	w.Flush()
 	return nil
 }
-

@@ -145,7 +145,6 @@ func RunNetpolCheck(
 			return fmt.Errorf("failed to get local network policies for pod: %w", err)
 		}
 
-
 		for _, policyType := range policyTypes {
 			var directionText string
 			if policyType == networkingv1.PolicyTypeEgress {
@@ -305,10 +304,10 @@ func GetEffectivePoliciesForConnection(
 	namespacesByName map[string]*v1.Namespace,
 ) []*networkingv1.NetworkPolicy {
 	var effectivePolicies []*networkingv1.NetworkPolicy
-	
+
 	// First filter by policy type
 	typedPolicies := FilterPoliciesByType(policies, policyType)
-	
+
 	// Then check which policies actually have rules that could affect this connection
 	for _, policy := range typedPolicies {
 		if policyType == networkingv1.PolicyTypeEgress {
@@ -318,7 +317,7 @@ func GetEffectivePoliciesForConnection(
 				effectivePolicies = append(effectivePolicies, policy)
 				continue
 			}
-			
+
 			for _, rule := range policy.Spec.Egress {
 				if couldRuleMatch(rule.To, rule.Ports, peerIP, port, podsByIP, namespacesByName, policy.Namespace) {
 					effectivePolicies = append(effectivePolicies, policy)
@@ -332,7 +331,7 @@ func GetEffectivePoliciesForConnection(
 				effectivePolicies = append(effectivePolicies, policy)
 				continue
 			}
-			
+
 			for _, rule := range policy.Spec.Ingress {
 				if couldRuleMatch(rule.From, rule.Ports, peerIP, port, podsByIP, namespacesByName, policy.Namespace) {
 					effectivePolicies = append(effectivePolicies, policy)
@@ -341,7 +340,7 @@ func GetEffectivePoliciesForConnection(
 			}
 		}
 	}
-	
+
 	return effectivePolicies
 }
 
@@ -360,7 +359,7 @@ func couldRuleMatch(
 	if len(peers) == 0 {
 		return true
 	}
-	
+
 	// Check if any peer could match
 	for _, peer := range peers {
 		// Check IPBlock
@@ -381,7 +380,7 @@ func couldRuleMatch(
 				}
 			}
 		}
-		
+
 		// Check pod/namespace selectors
 		if peer.PodSelector != nil || peer.NamespaceSelector != nil {
 			_, ok := podsByIP[peerIP.String()]
@@ -393,7 +392,7 @@ func couldRuleMatch(
 			}
 		}
 	}
-	
+
 	return false
 }
 
