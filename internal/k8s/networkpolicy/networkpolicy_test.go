@@ -199,19 +199,22 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 		targetPod := newPod("target-pod", "target-namespace", "10.0.0.10", map[string]string{"app": "api", "tier": "backend"})
 		peerPod := newPod("peer-pod", "peer-namespace", "10.0.0.5", map[string]string{"app": "client", "tier": "frontend"})
 		samePod := newPod("same-pod", "target-namespace", "10.0.0.11", map[string]string{"app": "worker"})
-		
+
 		podsByIP := map[string]*v1.Pod{
 			targetPod.Status.PodIP: targetPod,
 			peerPod.Status.PodIP:   peerPod,
 			samePod.Status.PodIP:   samePod,
 		}
 		namespacesByName := map[string]*v1.Namespace{
-			"peer-namespace":   newNamespace("peer-namespace", map[string]string{"env": "prod", "zone": "us-east"}),
-			"target-namespace": newNamespace("target-namespace", map[string]string{"kubernetes.io/metadata.name": "target-namespace", "env": "prod"}),
+			"peer-namespace": newNamespace("peer-namespace", map[string]string{"env": "prod", "zone": "us-east"}),
+			"target-namespace": newNamespace(
+				"target-namespace",
+				map[string]string{"kubernetes.io/metadata.name": "target-namespace", "env": "prod"},
+			),
 		}
 		return podsByIP, namespacesByName
 	}
-	
+
 	podsByIP, namespacesByName := setupPods()
 	targetPod := podsByIP["10.0.0.10"]
 	peerPod := podsByIP["10.0.0.5"]
@@ -230,7 +233,7 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 					{
 						From: []networkingv1.NetworkPolicyPeer{
 							{
-								PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+								PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
 								NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
 							},
 						},
@@ -308,7 +311,7 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 					{
 						To: []networkingv1.NetworkPolicyPeer{
 							{
-								PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+								PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
 								NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
 							},
 						},
@@ -696,7 +699,7 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 				Ingress: []networkingv1.NetworkPolicyIngressRule{{
 					From: []networkingv1.NetworkPolicyPeer{{
-						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+						PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
 						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
 					}},
 					Ports: []networkingv1.NetworkPolicyPort{
@@ -826,7 +829,7 @@ func TestEvaluatePodConnectivity(t *testing.T) {
 				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 				Ingress: []networkingv1.NetworkPolicyIngressRule{{
 					From: []networkingv1.NetworkPolicyPeer{{
-						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+						PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
 						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
 					}},
 					Ports: []networkingv1.NetworkPolicyPort{{
@@ -879,7 +882,7 @@ func TestEndToEndNetworkPolicyValidation(t *testing.T) {
 	// Setup test pods and namespaces
 	sourcePod := newPod("client-pod", "client-ns", "10.0.1.5", map[string]string{"app": "client", "role": "frontend"})
 	destPod := newPod("api-pod", "api-ns", "10.0.2.10", map[string]string{"app": "api", "role": "backend"})
-	
+
 	podsByIP := map[string]*v1.Pod{
 		sourcePod.Status.PodIP: sourcePod,
 		destPod.Status.PodIP:   destPod,
@@ -901,7 +904,7 @@ func TestEndToEndNetworkPolicyValidation(t *testing.T) {
 				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
 				Egress: []networkingv1.NetworkPolicyEgressRule{{
 					To: []networkingv1.NetworkPolicyPeer{{
-						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+						PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
 						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "backend"}},
 					}},
 					Ports: []networkingv1.NetworkPolicyPort{{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 8080}}},
@@ -920,7 +923,7 @@ func TestEndToEndNetworkPolicyValidation(t *testing.T) {
 				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 				Ingress: []networkingv1.NetworkPolicyIngressRule{{
 					From: []networkingv1.NetworkPolicyPeer{{
-						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+						PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
 						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "frontend"}},
 					}},
 					Ports: []networkingv1.NetworkPolicyPort{{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 8080}}},
@@ -929,7 +932,10 @@ func TestEndToEndNetworkPolicyValidation(t *testing.T) {
 		}
 
 		// Get source egress policies
-		sourceEgressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(sourcePod, []*networkingv1.NetworkPolicy{sourceEgressPolicy})
+		sourceEgressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(
+			sourcePod,
+			[]*networkingv1.NetworkPolicy{sourceEgressPolicy},
+		)
 		if err != nil {
 			t.Fatalf("failed to get source egress policies: %v", err)
 		}
@@ -972,7 +978,11 @@ func TestEndToEndNetworkPolicyValidation(t *testing.T) {
 		bothAllowed := egressAllowed && ingressAllowed
 
 		if !bothAllowed {
-			t.Fatalf("expected connection to be allowed (egress: %v, ingress: %v), but overall result was denied", egressAllowed, ingressAllowed)
+			t.Fatalf(
+				"expected connection to be allowed (egress: %v, ingress: %v), but overall result was denied",
+				egressAllowed,
+				ingressAllowed,
+			)
 		}
 	})
 
@@ -988,7 +998,7 @@ func TestEndToEndNetworkPolicyValidation(t *testing.T) {
 				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
 				Egress: []networkingv1.NetworkPolicyEgressRule{{
 					To: []networkingv1.NetworkPolicyPeer{{
-						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
+						PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}},
 						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "backend"}},
 					}},
 					Ports: []networkingv1.NetworkPolicyPort{{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 8080}}},
@@ -1007,13 +1017,18 @@ func TestEndToEndNetworkPolicyValidation(t *testing.T) {
 				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 				Ingress: []networkingv1.NetworkPolicyIngressRule{{
 					From: []networkingv1.NetworkPolicyPeer{{
-						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "monitoring"}}, // Only monitoring, not client
+						PodSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{"app": "monitoring"},
+						}, // Only monitoring, not client
 					}},
 				}},
 			},
 		}
 
-		sourceEgressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(sourcePod, []*networkingv1.NetworkPolicy{sourceEgressPolicy})
+		sourceEgressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(
+			sourcePod,
+			[]*networkingv1.NetworkPolicy{sourceEgressPolicy},
+		)
 		if err != nil {
 			t.Fatalf("failed to get source egress policies: %v", err)
 		}
@@ -1055,7 +1070,11 @@ func TestEndToEndNetworkPolicyValidation(t *testing.T) {
 		bothAllowed := egressAllowed && ingressAllowed
 
 		if bothAllowed {
-			t.Fatalf("expected connection to be denied (egress: %v, ingress: %v), but overall result was allowed", egressAllowed, ingressAllowed)
+			t.Fatalf(
+				"expected connection to be denied (egress: %v, ingress: %v), but overall result was allowed",
+				egressAllowed,
+				ingressAllowed,
+			)
 		}
 
 		// Verify that egress is allowed but ingress is denied
@@ -1096,7 +1115,7 @@ func TestEndToEndNetworkPolicyValidation(t *testing.T) {
 				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 				Ingress: []networkingv1.NetworkPolicyIngressRule{{
 					From: []networkingv1.NetworkPolicyPeer{{
-						PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
+						PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}},
 						NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "frontend"}},
 					}},
 					Ports: []networkingv1.NetworkPolicyPort{{Port: &intstr.IntOrString{Type: intstr.Int, IntVal: 8080}}},
@@ -1104,7 +1123,10 @@ func TestEndToEndNetworkPolicyValidation(t *testing.T) {
 			},
 		}
 
-		sourceEgressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(sourcePod, []*networkingv1.NetworkPolicy{sourceEgressPolicy})
+		sourceEgressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(
+			sourcePod,
+			[]*networkingv1.NetworkPolicy{sourceEgressPolicy},
+		)
 		if err != nil {
 			t.Fatalf("failed to get source egress policies: %v", err)
 		}
@@ -1146,7 +1168,11 @@ func TestEndToEndNetworkPolicyValidation(t *testing.T) {
 		bothAllowed := egressAllowed && ingressAllowed
 
 		if bothAllowed {
-			t.Fatalf("expected connection to be denied (egress: %v, ingress: %v), but overall result was allowed", egressAllowed, ingressAllowed)
+			t.Fatalf(
+				"expected connection to be denied (egress: %v, ingress: %v), but overall result was allowed",
+				egressAllowed,
+				ingressAllowed,
+			)
 		}
 
 		// Verify that ingress is allowed but egress is denied
@@ -1185,7 +1211,10 @@ func TestEndToEndNetworkPolicyValidation(t *testing.T) {
 			},
 		}
 
-		sourceEgressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(sourcePod, []*networkingv1.NetworkPolicy{sourceEgressPolicy})
+		sourceEgressPolicies, err := networkpolicy.GetLocalNetworkPoliciesForPod(
+			sourcePod,
+			[]*networkingv1.NetworkPolicy{sourceEgressPolicy},
+		)
 		if err != nil {
 			t.Fatalf("failed to get source egress policies: %v", err)
 		}
@@ -1227,7 +1256,11 @@ func TestEndToEndNetworkPolicyValidation(t *testing.T) {
 		bothAllowed := egressAllowed && ingressAllowed
 
 		if bothAllowed {
-			t.Fatalf("expected connection to be denied (egress: %v, ingress: %v), but overall result was allowed", egressAllowed, ingressAllowed)
+			t.Fatalf(
+				"expected connection to be denied (egress: %v, ingress: %v), but overall result was allowed",
+				egressAllowed,
+				ingressAllowed,
+			)
 		}
 
 		// Verify both are denied
@@ -1245,7 +1278,7 @@ func TestEvaluateFullConnectivity(t *testing.T) {
 	// Setup test environment
 	sourcePod := newPod("client-pod", "frontend", "10.0.1.5", map[string]string{"app": "client", "tier": "web"})
 	destPod := newPod("api-pod", "backend", "10.0.2.10", map[string]string{"app": "api", "tier": "service"})
-	
+
 	podsByIP := map[string]*v1.Pod{
 		sourcePod.Status.PodIP: sourcePod,
 		destPod.Status.PodIP:   destPod,
@@ -1417,17 +1450,23 @@ func TestFilterPoliciesByType(t *testing.T) {
 	// Create policies with different policy types
 	egressOnlyPolicy := newNetworkPolicy("egress-only", "default", labels.Set{"app": "client"}, networkingv1.PolicyTypeEgress)
 	ingressOnlyPolicy := newNetworkPolicy("ingress-only", "default", labels.Set{"app": "client"}, networkingv1.PolicyTypeIngress)
-	bothTypesPolicy := newNetworkPolicy("both-types", "default", labels.Set{"app": "client"}, networkingv1.PolicyTypeEgress, networkingv1.PolicyTypeIngress)
-	
+	bothTypesPolicy := newNetworkPolicy(
+		"both-types",
+		"default",
+		labels.Set{"app": "client"},
+		networkingv1.PolicyTypeEgress,
+		networkingv1.PolicyTypeIngress,
+	)
+
 	allPolicies := []*networkingv1.NetworkPolicy{egressOnlyPolicy, ingressOnlyPolicy, bothTypesPolicy}
-	
+
 	t.Run("Should filter to only egress policies", func(t *testing.T) {
 		filtered := networkpolicy.FilterPoliciesByType(allPolicies, networkingv1.PolicyTypeEgress)
-		
+
 		if len(filtered) != 2 {
 			t.Fatalf("expected 2 egress policies, got %d", len(filtered))
 		}
-		
+
 		// Should contain egress-only and both-types
 		foundEgressOnly := false
 		foundBothTypes := false
@@ -1441,19 +1480,19 @@ func TestFilterPoliciesByType(t *testing.T) {
 				t.Fatal("ingress-only policy should not be in egress filter")
 			}
 		}
-		
+
 		if !foundEgressOnly || !foundBothTypes {
 			t.Fatal("expected to find both egress-only and both-types policies")
 		}
 	})
-	
+
 	t.Run("Should filter to only ingress policies", func(t *testing.T) {
 		filtered := networkpolicy.FilterPoliciesByType(allPolicies, networkingv1.PolicyTypeIngress)
-		
+
 		if len(filtered) != 2 {
 			t.Fatalf("expected 2 ingress policies, got %d", len(filtered))
 		}
-		
+
 		// Should contain ingress-only and both-types
 		foundIngressOnly := false
 		foundBothTypes := false
@@ -1467,7 +1506,7 @@ func TestFilterPoliciesByType(t *testing.T) {
 				t.Fatal("egress-only policy should not be in ingress filter")
 			}
 		}
-		
+
 		if !foundIngressOnly || !foundBothTypes {
 			t.Fatal("expected to find both ingress-only and both-types policies")
 		}
