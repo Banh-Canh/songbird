@@ -4,7 +4,7 @@ go 1.24.4
 
 require (
 	github.com/ktr0731/go-fuzzyfinder v0.9.0
-	github.com/spf13/cobra v1.10.1
+	github.com/spf13/cobra v1.10.2
 	k8s.io/api v0.34.1
 	k8s.io/apimachinery v0.34.1
 	k8s.io/client-go v0.34.1
