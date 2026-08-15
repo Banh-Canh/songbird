@@ -1,3 +1,5 @@
+
+
 # Songbird 🐦
 
 `songbird` is a comprehensive command-line interface (CLI) tool for **Kubernetes network troubleshooting**. It helps you analyze network connectivity, diagnose Network Policy configurations, and resolve DNS issues in Kubernetes clusters.
@@ -284,7 +286,7 @@ Display the YAML of network policies affecting a specific pod.
 
 **Command:**
 ```bash
-songbird show flux-system/flux-operator-86fdfcd59-p2vvq -o yaml
+songbird netpol show flux-system/flux-operator-86fdfcd59-p2vvq -o yaml
 ```
 
 **Output:**
